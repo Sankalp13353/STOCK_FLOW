@@ -1,0 +1,48 @@
+{
+  "name": "stockflow-backend",
+  "version": "1.0.0",
+  "description": "StockFlow — Distributed Inventory & Order Management System Backend",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "test": "jest --runInBand --detectOpenHandles --forceExit"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.3.0",
+    "bcrypt": "^5.1.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^5.0.2",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/jest": "^29.5.14",
+    "@types/jsonwebtoken": "^9.0.8",
+    "@types/node": "^22.13.0",
+    "@types/supertest": "^6.0.2",
+    "jest": "^29.7.0",
+    "prisma": "^6.3.0",
+    "supertest": "^7.0.0",
+    "ts-jest": "^29.2.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  },
+  "keywords": [
+    "inventory",
+    "order-management",
+    "postgresql",
+    "prisma",
+    "express",
+    "typescript"
+  ],
+  "author": "StockFlow Engineering Team",
+  "license": "ISC"
+}

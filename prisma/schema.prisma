@@ -1,0 +1,103 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum UserRole {
+  CUSTOMER
+  WAREHOUSE_STAFF
+  ADMIN
+}
+
+enum MovementType {
+  RESTOCK
+  RESERVATION_HOLD
+  RESERVATION_RELEASE
+  FULFILLMENT_DEDUCTION
+  AUDIT_ADJUSTMENT
+}
+
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  email        String    @unique(map: "idx_users_email") @db.VarChar(255)
+  passwordHash String    @map("password_hash") @db.VarChar(255)
+  fullName     String    @map("full_name") @db.VarChar(100)
+  role         UserRole  @default(CUSTOMER)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("users")
+}
+
+model Warehouse {
+  id                 String              @id @default(uuid()) @db.Uuid
+  code               String              @unique(map: "idx_warehouses_code") @db.VarChar(50)
+  name               String              @db.VarChar(150)
+  address            String              @db.VarChar(255)
+  city               String              @db.VarChar(100)
+  country            String              @db.VarChar(100)
+  isActive           Boolean             @default(true) @map("is_active")
+  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz
+  inventory          Inventory[]
+  inventoryMovements InventoryMovement[]
+
+  @@map("warehouses")
+}
+
+model Product {
+  id                 String              @id @default(uuid()) @db.Uuid
+  sku                String              @unique(map: "idx_products_sku") @db.VarChar(100)
+  name               String              @db.VarChar(200)
+  description        String?             @db.Text
+  priceCents         Int                 @map("price_cents")
+  isActive           Boolean             @default(true) @map("is_active")
+  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz
+  inventory          Inventory[]
+  inventoryMovements InventoryMovement[]
+
+  @@index([isActive], map: "idx_products_active")
+  @@map("products")
+}
+
+model Inventory {
+  id               String    @id @default(uuid()) @db.Uuid
+  productId        String    @map("product_id") @db.Uuid
+  warehouseId      String    @map("warehouse_id") @db.Uuid
+  quantityOnHand   Int       @default(0) @map("quantity_on_hand")
+  quantityReserved Int       @default(0) @map("quantity_reserved")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  product          Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+  warehouse        Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  @@unique([productId, warehouseId], map: "uq_inventory_product_warehouse")
+  @@index([warehouseId], map: "idx_inventory_warehouse")
+  @@map("inventory")
+}
+
+model InventoryMovement {
+  id            String       @id @default(uuid()) @db.Uuid
+  productId     String       @map("product_id") @db.Uuid
+  warehouseId   String       @map("warehouse_id") @db.Uuid
+  quantityDelta Int          @map("quantity_delta")
+  movementType  MovementType @map("movement_type")
+  referenceId   String?      @map("reference_id") @db.Uuid
+  notes         String?      @db.Text
+  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz
+
+  product       Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  warehouse     Warehouse    @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  @@index([productId, warehouseId], map: "idx_inv_movements_prod_wh")
+  @@index([referenceId], map: "idx_inv_movements_ref")
+  @@index([createdAt], map: "idx_inv_movements_created")
+  @@map("inventory_movements")
+}
+
