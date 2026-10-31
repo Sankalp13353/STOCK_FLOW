@@ -28,6 +28,14 @@ router.post(
   inventoryController.addStock
 );
 
+// Trigger expiration of stale reservations
+router.post(
+  '/expire-reservations',
+  authenticate,
+  authorize(UserRole.WAREHOUSE_STAFF, UserRole.ADMIN),
+  inventoryController.expireReservations
+);
+
 // Overview inventory queries
 router.get('/', validate({ query: inventoryQuerySchema }), inventoryController.getInventory);
 
@@ -45,4 +53,3 @@ router.get(
 );
 
 export const inventoryRouter = router;
-

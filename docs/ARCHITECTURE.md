@@ -425,3 +425,68 @@ stockflow-backend/
 - `src/modules/reservations/reservation.worker.ts`: Self-contained background sweeper task for expiring stale reservations.
 - `tests/concurrency/`: Dedicated test harness for simulating hundreds of simultaneous checkouts on a single inventory item to verify zero-oversell guarantees.
 
+
+
+---
+
+## 9. Core System Design & Concurrency Concepts Implemented (Phase 3)
+
+### 9.1 ACID Transactions
+Every mutating workflow in StockFlow operates inside a strict database transaction (`prisma.$transaction`):
+- **Atomicity:** In order placement, creating the `Order`, creating `OrderItem` records, incrementing `quantity_reserved` in `inventory`, creating the `InventoryReservation` record, and logging the `inventory_movements` ledger happen as a single indivisible unit. If any check fails (e.g., insufficient stock on the second SKU), every modification is rolled back.
+- **Consistency:** Database invariants (`quantity_reserved <= quantity_on_hand`, `quantity_on_hand >= 0`) are checked by PostgreSQL engine constraints at commit time.
+- **Isolation:** Using PostgreSQL's default `Read Committed` isolation level augmented with explicit pessimistic row locks (`FOR UPDATE`), read-modify-write anomalies are completely eliminated.
+- **Durability:** Committed transactions are flushed to the Write-Ahead Log (WAL) on PostgreSQL before returning HTTP 201 to the client.
+
+### 9.2 Database Row-Level Locking (`SELECT ... FOR UPDATE`)
+To serialize concurrent order placements on hot inventory SKUs, StockFlow utilizes PostgreSQL pessimistic row locking:
+```sql
+SELECT id, product_id, warehouse_id, quantity_on_hand, quantity_reserved
+FROM inventory
+WHERE id = ANY($1::uuid[])
+ORDER BY id ASC
+FOR UPDATE
+```
+When Request A locks the inventory row, Request B waits at the row level until Request A commits. When Request B acquires the lock, it reads the updated `quantity_reserved`, computes `available = on_hand - reserved`, and cleanly fails with `HTTP 409 Conflict` if stock is exhausted.
+
+### 9.3 Race Condition Elimination (Zero Overselling Guarantee)
+In high-concurrency flash sales (e.g., 100 simultaneous requests competing for 10 units), naive read-then-write code experiences the classic "check-then-act" race condition:
+1. Client 1 reads Available = 1
+2. Client 2 reads Available = 1
+3. Client 1 decrements $\to$ 0
+4. Client 2 decrements $\to$ -1 (Oversell!)
+
+With StockFlow's row-level locking, Client 2 cannot read or modify the row until Client 1 finishes. The integration stress test (`tests/concurrency.test.ts`) verified that across 100 simultaneous requests for 10 units, exactly 10 succeed, 90 fail with HTTP 409, and available stock never drops below 0.
+
+### 9.4 Isolation & Consistency Guarantees
+StockFlow enforces strong consistency:
+- Available stock is never stored as an independent column; it is always derived dynamically ($\text{on\_hand} - \text{reserved}$) to prevent drift.
+- Inventory movements are append-only. Summing movements reconciles exact physical inventory.
+
+### 9.5 Idempotency Implementation
+StockFlow enforces idempotency using client-supplied `Idempotency-Key` headers:
+1. **Hash Verification:** Request bodies are hashed via SHA-256 (`requestPayloadHash`). If the same key is reused with a different payload, the server rejects it with `HTTP 409 Conflict (IDEMPOTENCY_PAYLOAD_MISMATCH)`.
+2. **Replay Cache:** Completed order responses are cached in `idempotency_records`. Repeated requests return the identical cached order with an `Idempotent-Replay: true` header without reserving additional inventory.
+3. **Concurrent Key Race Handling:** If 5 concurrent requests fire with the exact same key at the same millisecond, the database unique constraint permits exactly 1 to insert. The other 4 catch the `P2002` constraint, await transaction completion, and safely return the winning response.
+
+### 9.6 Two-Phase Reservation Lifecycle
+```
+PENDING ──(Stock Locked)──> RESERVED ──(Pay Succeeded)──> CONFIRMED (Committed)
+                               │
+                               ├──(Pay Failed)──> PAYMENT_FAILED (Released)
+                               ├──(User Cancel)──> CANCELLED (Released)
+                               └──(TTL Expired)──> RESERVATION_EXPIRED (Released)
+```
+- Stock is held temporarily with a 15-minute TTL. Physical `quantity_on_hand` is only deducted upon successful payment capture.
+
+### 9.7 Rollback and Failure Handling
+- **Payment Failure:** When simulated payment returns `FAIL`, the transaction updates payment to `FAILED`, sets order to `PAYMENT_FAILED`, marks reservations `RELEASED`, decrements `quantity_reserved`, and logs a `RESERVATION_RELEASE` audit record.
+- **Reservation Expiry Sweeper:** Background sweeper queries active reservations where `expires_at < NOW()`, decrements `quantity_reserved`, marks reservations `EXPIRED`, and updates orders to `RESERVATION_EXPIRED`.
+
+### 9.8 Deadlock Prevention via Canonical Resource Ordering
+A classic deadlock occurs if Order 1 locks SKU A then SKU B, while Order 2 locks SKU B then SKU A.
+StockFlow eliminates this by sorting all target inventory IDs deterministically:
+```ts
+const uniqueInventoryIds = Array.from(new Set(resolvedItems.map((r) => r.inventoryId))).sort();
+```
+By acquiring row locks in ascending UUID order across all transactions, cyclic wait graphs are mathematically impossible.

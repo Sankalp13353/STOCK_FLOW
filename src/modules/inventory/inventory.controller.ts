@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { inventoryService } from './inventory.service';
+import { reservationService } from '../reservations/reservation.service';
 import { sendSuccess } from '../../common/utils/response';
 
 export class InventoryController {
@@ -28,6 +29,15 @@ export class InventoryController {
         : req.params.warehouseId;
       const records = await inventoryService.getInventoryByWarehouse(warehouseId);
       sendSuccess(res, records, 200);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  public async expireReservations(_req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const result = await reservationService.expireStaleReservations();
+      sendSuccess(res, result, 200);
     } catch (error) {
       next(error);
     }

@@ -3,8 +3,8 @@
 [![Architecture: Modular Monolith](https://img.shields.io/badge/Architecture-Modular%20Monolith-blue.svg)](#)
 [![Database: PostgreSQL + Prisma](https://img.shields.io/badge/Database-PostgreSQL%20%7C%20Prisma-indigo.svg)](#)
 [![Backend: Node.js + TypeScript](https://img.shields.io/badge/Backend-Node.js%20%7C%20Express%20%7C%20TypeScript-green.svg)](#)
-[![Testing: Jest + Supertest](https://img.shields.io/badge/Tests-40%20Passing-brightgreen.svg)](#)
-[![Status: Phase 2 Completed](https://img.shields.io/badge/Phase-2%20Core%20Backend%20Complete-brightgreen.svg)](#)
+[![Testing: Jest + Supertest](https://img.shields.io/badge/Tests-61%20Passing-brightgreen.svg)](#)
+[![Status: Phase 3 Completed](https://img.shields.io/badge/Phase-3%20Order%20%26%20Concurrency%20Complete-brightgreen.svg)](#)
 
 ---
 
@@ -20,14 +20,14 @@
 
 ---
 
-## 2. Phase 1 Documentation Index
+## 2. Documentation Index
 
-All engineering blueprints from Phase 1 are maintained in the [`docs/`](file:///Users/sankalp/Desktop/SDE_PRO_1/docs) directory:
+All engineering blueprints and architecture documentation are maintained in the [`docs/`](file:///Users/sankalp/Desktop/SDE_PRO_1/docs) directory:
 
 | Document | Description |
 | :--- | :--- |
 | **[SRS.md](file:///Users/sankalp/Desktop/SDE_PRO_1/docs/SRS.md)** | **Software Requirements Specification:** Problem statement, target personas, functional & non-functional requirements, constraints, and business requirement analyses. |
-| **[ARCHITECTURE.md](file:///Users/sankalp/Desktop/SDE_PRO_1/docs/ARCHITECTURE.md)** | **System Architecture & Technical Design:** Modular monolithic architecture, module boundaries, request-response lifecycle, Mermaid component diagrams, ADRs, and folder structure. |
+| **[ARCHITECTURE.md](file:///Users/sankalp/Desktop/SDE_PRO_1/docs/ARCHITECTURE.md)** | **System Architecture & Technical Design:** Modular monolithic architecture, module boundaries, request-response lifecycle, Mermaid component diagrams, ADRs, and detailed Phase 3 concurrency implementation guide. |
 | **[DATABASE_DESIGN.md](file:///Users/sankalp/Desktop/SDE_PRO_1/docs/DATABASE_DESIGN.md)** | **Database Design & Schema:** Normalized 3NF PostgreSQL schema, full table schemas, data types, constraints, partial indexes, and Mermaid ER diagram. |
 | **[ORDER_LIFECYCLE.md](file:///Users/sankalp/Desktop/SDE_PRO_1/docs/ORDER_LIFECYCLE.md)** | **Order Lifecycle State Machine:** Finite-state machine definitions, valid transitions matrix, invalid transitions, inventory side effects, and compensation/rollback workflows. |
 | **[API_SPECIFICATION.md](file:///Users/sankalp/Desktop/SDE_PRO_1/docs/API_SPECIFICATION.md)** | **REST API Contracts:** Standard API envelopes, endpoint contracts for Auth, Products, Warehouses, Inventory, Orders, and Payments. |
@@ -40,23 +40,15 @@ All engineering blueprints from Phase 1 are maintained in the [`docs/`](file:///
 timeline
     title StockFlow Engineering Roadmap
     Phase 1 (Completed) : Engineering Blueprint : Architecture & SRS : Database Schema & ERD : Order State Machine : REST API Contracts
-    Phase 2 (Completed) : Core Backend Foundation : Express + TypeScript Setup : PostgreSQL + Prisma Schema : Auth & RBAC (JWT + bcrypt) : Product, Warehouse & Inventory APIs : Automated Test Suite (40 Tests)
-    Phase 3 (Next) : Concurrency & Order Engine : Row-Level Pessimistic Locking : Two-Phase Stock Reservation with TTL : Order State Machine & Cancellation : Concurrency Test Suite (k6 / Jest)
-    Phase 4 : Async Infrastructure : Redis Caching & Rate Limiting : RabbitMQ Event Bus : Transactional Outbox Pattern : Background Reservation Sweeper
+    Phase 2 (Completed) : Core Backend Foundation : Express + TypeScript Setup : PostgreSQL + Prisma Schema : Auth & RBAC (JWT + bcrypt) : Product, Warehouse & Inventory APIs
+    Phase 3 (Completed) : Concurrency & Order Engine : Row-Level Pessimistic Locking : Two-Phase Stock Reservation with TTL : Order State Machine & Cancellation : Idempotency Engine : Payment Simulation : Integration Stress Test (61 Tests)
+    Phase 4 (Next) : Async Infrastructure : Redis Caching & Rate Limiting : RabbitMQ Event Bus : Transactional Outbox Pattern : Background Reservation Sweeper
     Phase 5 : Frontend & Deployment : React + TypeScript Dashboard : Docker Compose Infrastructure : CI/CD Automation
 ```
 
 ---
 
-## 4. Phase 2 Implemented Features & Endpoints
-
-### 4.1 Implemented Modules
-- **Authentication & User Management:** User registration, password hashing (`bcrypt`), JWT token generation, role-based access control (`CUSTOMER`, `WAREHOUSE_STAFF`, `ADMIN`), and current user profile inspection.
-- **Product Management:** Product catalog creation, listing with pagination & search, individual SKU detail lookup, and product updates with duplicate SKU prevention.
-- **Warehouse Management:** Distribution facility creation, unique warehouse code enforcement, active status tracking, and warehouse listing & detail retrieval.
-- **Inventory Management:** Atomic stock replenishment using PostgreSQL transactions, double-entry tracking (`quantityOnHand`, `quantityReserved`, dynamic `quantityAvailable`), duplicate record prevention via composite unique keys, and immutable `inventory_movements` audit logging.
-
-### 4.2 API Endpoints Matrix
+## 4. Implemented API Endpoints Matrix
 
 | Module | Method | Endpoint | Access Control | Purpose |
 | :--- | :--- | :--- | :--- | :--- |
@@ -74,6 +66,13 @@ timeline
 | **Inventory**| `POST` | `/api/v1/inventory/restock` & `/stock` | Staff / Admin | Atomically add stock & log movement |
 | **Inventory**| `GET` | `/api/v1/inventory` | Public | Global inventory / product breakdown |
 | **Inventory**| `GET` | `/api/v1/inventory/warehouse/:id` & `/:id` | Public | List stock at specific warehouse |
+| **Inventory**| `POST` | `/api/v1/inventory/expire-reservations` | Staff / Admin | Trigger sweeper for expired stock holds |
+| **Orders** | `POST` | `/api/v1/orders` | Customer / Admin | Place order with row lock & stock reservation |
+| **Orders** | `GET` | `/api/v1/orders` | Authenticated | List customer orders (or all for Admin) |
+| **Orders** | `GET` | `/api/v1/orders/my-orders` | Customer | List authenticated customer's orders |
+| **Orders** | `GET` | `/api/v1/orders/:id` | Authenticated | Get full order details & reservations |
+| **Orders** | `POST` | `/api/v1/orders/:id/cancel` | Authenticated | Cancel order & release held/committed stock |
+| **Payments**| `POST` | `/api/v1/payments/process` | Authenticated | Simulate payment outcome (commit/release stock) |
 
 ---
 
@@ -81,23 +80,11 @@ timeline
 
 ### Prerequisites
 - Node.js (>= v20.x, tested on v26.4.0)
-- PostgreSQL (>= 15.x)
+- PostgreSQL (>= 15.x, Neon supported via pooled & direct connections)
 - npm (>= 10.x)
 
-### Environment Configuration
-Copy `.env.example` to `.env` and configure your database credentials:
-```bash
-cp .env.example .env
-```
-
-### Database Migration
-```bash
-npm run prisma:generate
-npx prisma migrate dev
-```
-
 ### Running Tests
-Execute the comprehensive automated test suite (Unit & Supertest Integration):
+Execute the comprehensive automated test suite (Unit, Integration & Concurrency Stress Test):
 ```bash
 npm test
 ```
@@ -114,14 +101,12 @@ npm start
 
 ---
 
-## 6. Next Steps for Phase 3
+## 6. Next Steps for Phase 4
 
-Phase 2 establishes the core operational baseline with 100% test pass rate across 40 test cases.
+Phase 3 establishes the concurrency control baseline with 100% test pass rate across 61 test cases, proving zero overselling under extreme simultaneous load.
 
-**Phase 3** will implement the **Concurrency & Order Processing Engine**:
-1. Implement `Order` and `OrderItem` domain entities.
-2. Build the Two-Phase Inventory Reservation Engine (`quantityReserved` management).
-3. Implement PostgreSQL Row-Level Pessimistic Locking (`SELECT ... FOR UPDATE`) sorted by `product_id ASC` to eliminate deadlocks and race conditions.
-4. Enforce idempotency key handling across order creation.
-5. Implement order cancellation and automatic inventory rollback compensation workflows.
-6. Write concurrency stress tests simulating simultaneous checkout requests competing for the same SKU.
+**Phase 4** will implement **Asynchronous Infrastructure & Background Processing**:
+1. Integrate **Redis** for distributed caching of product catalog and inventory availability reads.
+2. Implement Redis token-bucket rate limiting to protect order checkout endpoints from bot traffic.
+3. Integrate **RabbitMQ** event broker with the **Transactional Outbox Pattern** for decoupled domain event dispatching.
+4. Convert the reservation expiration sweeper into an autonomous recurring background worker.

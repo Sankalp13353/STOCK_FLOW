@@ -1,6 +1,7 @@
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 generator client {
@@ -21,6 +22,33 @@ enum MovementType {
   AUDIT_ADJUSTMENT
 }
 
+enum OrderStatus {
+  PENDING
+  RESERVED
+  PAYMENT_PENDING
+  CONFIRMED
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  PAYMENT_FAILED
+  RESERVATION_EXPIRED
+}
+
+enum ReservationStatus {
+  ACTIVE
+  COMMITTED
+  RELEASED
+  EXPIRED
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
 model User {
   id           String    @id @default(uuid()) @db.Uuid
   email        String    @unique(map: "idx_users_email") @db.VarChar(255)
@@ -29,6 +57,8 @@ model User {
   role         UserRole  @default(CUSTOMER)
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  orders       Order[]
 
   @@map("users")
 }
@@ -43,8 +73,10 @@ model Warehouse {
   isActive           Boolean             @default(true) @map("is_active")
   createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz
   updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz
+
   inventory          Inventory[]
   inventoryMovements InventoryMovement[]
+  orderItems         OrderItem[]
 
   @@map("warehouses")
 }
@@ -58,24 +90,27 @@ model Product {
   isActive           Boolean             @default(true) @map("is_active")
   createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz
   updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz
+
   inventory          Inventory[]
   inventoryMovements InventoryMovement[]
+  orderItems         OrderItem[]
 
   @@index([isActive], map: "idx_products_active")
   @@map("products")
 }
 
 model Inventory {
-  id               String    @id @default(uuid()) @db.Uuid
-  productId        String    @map("product_id") @db.Uuid
-  warehouseId      String    @map("warehouse_id") @db.Uuid
-  quantityOnHand   Int       @default(0) @map("quantity_on_hand")
-  quantityReserved Int       @default(0) @map("quantity_reserved")
-  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  id               String                 @id @default(uuid()) @db.Uuid
+  productId        String                 @map("product_id") @db.Uuid
+  warehouseId      String                 @map("warehouse_id") @db.Uuid
+  quantityOnHand   Int                    @default(0) @map("quantity_on_hand")
+  quantityReserved Int                    @default(0) @map("quantity_reserved")
+  createdAt        DateTime               @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime               @updatedAt @map("updated_at") @db.Timestamptz
 
-  product          Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
-  warehouse        Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  product          Product                @relation(fields: [productId], references: [id], onDelete: Restrict)
+  warehouse        Warehouse              @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  reservations     InventoryReservation[]
 
   @@unique([productId, warehouseId], map: "uq_inventory_product_warehouse")
   @@index([warehouseId], map: "idx_inventory_warehouse")
@@ -101,3 +136,90 @@ model InventoryMovement {
   @@map("inventory_movements")
 }
 
+model Order {
+  id                    String                 @id @default(uuid()) @db.Uuid
+  orderNumber           String                 @unique(map: "idx_orders_order_number") @map("order_number") @db.VarChar(50)
+  userId                String                 @map("user_id") @db.Uuid
+  status                OrderStatus            @default(PENDING)
+  totalAmountCents      Int                    @map("total_amount_cents")
+  idempotencyKey        String?                @unique(map: "idx_orders_idempotency_key") @map("idempotency_key") @db.VarChar(255)
+  shippingAddress       String                 @map("shipping_address") @db.Text
+  createdAt             DateTime               @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt             DateTime               @updatedAt @map("updated_at") @db.Timestamptz
+
+  user                  User                   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  orderItems            OrderItem[]
+  inventoryReservations InventoryReservation[]
+  payments              Payment[]
+
+  @@index([userId], map: "idx_orders_user_id")
+  @@index([status], map: "idx_orders_status")
+  @@map("orders")
+}
+
+model OrderItem {
+  id             String    @id @default(uuid()) @db.Uuid
+  orderId        String    @map("order_id") @db.Uuid
+  productId      String    @map("product_id") @db.Uuid
+  warehouseId    String    @map("warehouse_id") @db.Uuid
+  quantity       Int
+  unitPriceCents Int       @map("unit_price_cents")
+  subtotalCents  Int       @map("subtotal_cents")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  order          Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product        Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+  warehouse      Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  @@index([orderId], map: "idx_order_items_order_id")
+  @@index([productId], map: "idx_order_items_product_id")
+  @@map("order_items")
+}
+
+model InventoryReservation {
+  id          String            @id @default(uuid()) @db.Uuid
+  orderId     String            @map("order_id") @db.Uuid
+  inventoryId String            @map("inventory_id") @db.Uuid
+  quantity    Int
+  status      ReservationStatus @default(ACTIVE)
+  expiresAt   DateTime          @map("expires_at") @db.Timestamptz
+  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime          @updatedAt @map("updated_at") @db.Timestamptz
+
+  order       Order             @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  inventory   Inventory         @relation(fields: [inventoryId], references: [id], onDelete: Restrict)
+
+  @@index([orderId], map: "idx_reservations_order_id")
+  @@index([inventoryId], map: "idx_reservations_inventory_id")
+  @@index([status, expiresAt], map: "idx_reservations_expiry")
+  @@map("inventory_reservations")
+}
+
+model Payment {
+  id                   String        @id @default(uuid()) @db.Uuid
+  orderId              String        @map("order_id") @db.Uuid
+  amountCents          Int           @map("amount_cents")
+  status               PaymentStatus @default(PENDING)
+  paymentMethod        String        @map("payment_method") @db.VarChar(50)
+  transactionReference String        @unique(map: "idx_payments_tx_ref") @map("transaction_reference") @db.VarChar(100)
+  failureReason        String?       @map("failure_reason") @db.Text
+  createdAt            DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt            DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+
+  order                Order         @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([orderId], map: "idx_payments_order_id")
+  @@map("payments")
+}
+
+model IdempotencyRecord {
+  id                 String    @id @default(uuid()) @db.Uuid
+  key                String    @unique(map: "idx_idempotency_key") @db.VarChar(255)
+  requestPath        String    @map("request_path") @db.VarChar(255)
+  requestPayloadHash String    @map("request_payload_hash") @db.VarChar(64)
+  responseStatus     Int       @map("response_status")
+  responseBody       Json      @map("response_body")
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("idempotency_records")
+}
