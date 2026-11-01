@@ -2,6 +2,8 @@ import { MovementType, OrderStatus, Payment, PaymentStatus, ReservationStatus, U
 import { prisma } from '../../database/prisma';
 import { BadRequestError, ForbiddenError, NotFoundError, UnprocessableEntityError } from '../../common/errors/app-error';
 import { ProcessPaymentInput } from './payment.schemas';
+import { EVENT_TYPES } from '../../config/constants';
+import { outboxService } from '../outbox/outbox.service';
 
 export interface PaymentProcessResult {
   payment: Payment;
@@ -116,6 +118,21 @@ export class PaymentService {
           data: { status: OrderStatus.CONFIRMED },
         });
 
+        // Record Transactional Outbox Event for Payment Success & Order Confirmation
+        await outboxService.recordEvent(tx, {
+          aggregateType: 'Order',
+          aggregateId: order.id,
+          eventType: EVENT_TYPES.ORDER_CONFIRMED,
+          payload: {
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            userId: order.userId,
+            paymentId: payment.id,
+            amountCents: payment.amountCents,
+            confirmedAt: new Date().toISOString(),
+          },
+        });
+
         return {
           payment,
           orderId,
@@ -171,6 +188,22 @@ export class PaymentService {
         await tx.order.update({
           where: { id: orderId },
           data: { status: OrderStatus.PAYMENT_FAILED },
+        });
+
+        // Record Transactional Outbox Event for Payment Failure
+        await outboxService.recordEvent(tx, {
+          aggregateType: 'Order',
+          aggregateId: order.id,
+          eventType: EVENT_TYPES.ORDER_PAYMENT_FAILED,
+          payload: {
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            userId: order.userId,
+            paymentId: payment.id,
+            amountCents: payment.amountCents,
+            failureReason: payment.failureReason || 'Simulated bank decline',
+            failedAt: new Date().toISOString(),
+          },
         });
 
         return {

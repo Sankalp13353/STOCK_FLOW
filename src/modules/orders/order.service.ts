@@ -1,9 +1,10 @@
 import { MovementType, Order, OrderStatus, Prisma, ReservationStatus, UserRole } from '@prisma/client';
 import { prisma } from '../../database/prisma';
-import { APP_CONSTANTS } from '../../config/constants';
+import { APP_CONSTANTS, EVENT_TYPES } from '../../config/constants';
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError, UnprocessableEntityError } from '../../common/errors/app-error';
 import { hashPayload } from '../../common/utils/crypto';
 import { CancelOrderInput, CreateOrderInput, ListOrdersQuery } from './order.schemas';
+import { outboxService } from '../outbox/outbox.service';
 
 export interface OrderCreationResult {
   order: Order & {
@@ -260,7 +261,29 @@ export class OrderService {
           reservations: createdReservations,
         };
 
-        // Step G: Save Idempotency Record
+        // Step G: Record Transactional Outbox Event
+        await outboxService.recordEvent(tx, {
+          aggregateType: 'Order',
+          aggregateId: order.id,
+          eventType: EVENT_TYPES.ORDER_CREATED,
+          payload: {
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            userId: order.userId,
+            totalAmountCents: order.totalAmountCents,
+            shippingAddress: order.shippingAddress,
+            items: createdItems.map((item) => ({
+              productId: item.productId,
+              warehouseId: item.warehouseId,
+              quantity: item.quantity,
+              unitPriceCents: item.unitPriceCents,
+              subtotalCents: item.subtotalCents,
+            })),
+            createdAt: order.createdAt.toISOString(),
+          },
+        });
+
+        // Step H: Save Idempotency Record
         if (idempotencyKey) {
           await tx.idempotencyRecord.create({
             data: {
@@ -528,6 +551,21 @@ export class OrderService {
       const updatedOrder = await tx.order.update({
         where: { id: orderId },
         data: { status: OrderStatus.CANCELLED },
+      });
+
+      // Record Transactional Outbox Event for Cancellation
+      await outboxService.recordEvent(tx, {
+        aggregateType: 'Order',
+        aggregateId: updatedOrder.id,
+        eventType: EVENT_TYPES.ORDER_CANCELLED,
+        payload: {
+          orderId: updatedOrder.id,
+          orderNumber: updatedOrder.orderNumber,
+          userId: updatedOrder.userId,
+          reason: reason || 'Customer requested cancellation',
+          stockReleased,
+          cancelledAt: new Date().toISOString(),
+        },
       });
 
       return {

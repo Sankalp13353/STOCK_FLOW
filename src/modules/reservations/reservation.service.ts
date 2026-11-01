@@ -1,5 +1,7 @@
 import { MovementType, OrderStatus, ReservationStatus } from '@prisma/client';
 import { prisma } from '../../database/prisma';
+import { EVENT_TYPES } from '../../config/constants';
+import { outboxService } from '../outbox/outbox.service';
 
 export interface ExpiryResult {
   expiredReservationsCount: number;
@@ -88,6 +90,20 @@ export class ReservationService {
               status: OrderStatus.RESERVATION_EXPIRED,
             },
           });
+
+          // Record Transactional Outbox Event for Expired Reservation
+          await outboxService.recordEvent(tx, {
+            aggregateType: 'Order',
+            aggregateId: order.id,
+            eventType: EVENT_TYPES.ORDER_RESERVATION_EXPIRED,
+            payload: {
+              orderId: order.id,
+              orderNumber: order.orderNumber,
+              userId: order.userId,
+              expiredAt: new Date().toISOString(),
+            },
+          });
+
           expiredOrdersCount++;
         }
       }

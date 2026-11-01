@@ -490,3 +490,36 @@ StockFlow eliminates this by sorting all target inventory IDs deterministically:
 const uniqueInventoryIds = Array.from(new Set(resolvedItems.map((r) => r.inventoryId))).sort();
 ```
 By acquiring row locks in ascending UUID order across all transactions, cyclic wait graphs are mathematically impossible.
+
+---
+
+## 10. Phase 4 Technical Implementation — Event-Driven Architecture & Transactional Outbox
+
+### 10.1 Motivation & The Dual-Write Problem
+To decouple the primary checkout funnel from downstream asynchronous operations (notifications, audit reconciliation, external logistics), StockFlow implements an **Event-Driven Architecture (EDA)** powered by RabbitMQ. 
+
+To eliminate the dual-write vulnerability—where an order is written to PostgreSQL but fails to emit to RabbitMQ if the node crashes—StockFlow implements the **Transactional Outbox Pattern**:
+- Every business event is inserted into the `outbox_events` table inside the *same atomic PostgreSQL transaction* as the entity update.
+- No network calls to RabbitMQ are made within the HTTP request lifecycle. The database remains the single source of truth.
+
+### 10.2 Outbox Publisher Engine & Lockless Batch Claiming
+An asynchronous background worker (`OutboxPublisherWorker`) scans for unpublished events:
+- **Lockless Claiming (`FOR UPDATE SKIP LOCKED`):** Multiple publisher worker instances claim batches without lock contention or deadlocks.
+- **Strict Per-Aggregate FIFO Ordering:** A correlated `NOT EXISTS` subquery guarantees that events belonging to the same aggregate (e.g. `order.created` then `order.confirmed`) are published strictly in order of creation. An event cannot be claimed if an earlier event for the same aggregate remains unpublished. Cross-aggregate events remain fully concurrent.
+- **Publisher Confirms & Exponential Backoff:** Events are published to RabbitMQ topic exchange `stockflow.events` with `persistent: true`. Only after receiving broker confirmation is the database status updated to `PUBLISHED`. Failed publishes transition to `FAILED` with bounded exponential backoff delay ($\min(2^n, 60)\text{ s}$) before becoming re-eligible.
+- **Lease Timeout for Fault Tolerance:** If an instance crashes while holding claimed rows, other instances automatically reclaim them after `OUTBOX_LOCK_TTL_SECONDS = 60s`.
+
+### 10.3 RabbitMQ Topology & Dead-Lettering
+- **Primary Topic Exchange:** `stockflow.events` routes events by routing key (e.g. `order.created`, `order.confirmed`, `order.cancelled`).
+- **Dead-Letter Exchange (DLX):** `stockflow.dlx` direct exchange.
+- **Primary Queues:** `order-notifications.queue` and `inventory-events.queue` configured with `deadLetterExchange: 'stockflow.dlx'`.
+- **Dead-Letter Queues:** `order-notifications.dlq` and `inventory-events.dlq` store poisoned messages that fail repeatedly.
+
+### 10.4 Consumer Idempotency & Crash Recovery
+RabbitMQ provides at-least-once message delivery. To prevent duplicate executions and recover from worker crashes mid-handler:
+- **Two-Phase Idempotency Lifecycle:** Events transition through `IN_PROGRESS` $\to$ `COMPLETED`.
+- **Claim Token Fencing:** Each lease acquisition generates a unique UUID fencing token. When a consumer completes handling, it updates status to `COMPLETED` filtered by matching `claim_token`. If a worker's lease expired and was reclaimed by another worker, the stale worker's commit is safely ignored.
+- **Stale Lease Recovery:** If a consumer crashes mid-handler, its lease expires after `leaseTtlMs` (30s), allowing redelivered messages to be claimed and processed rather than skipped.
+- **Immediate Failure Release:** If an unhandled exception occurs, the worker immediately deletes its `IN_PROGRESS` reservation, allowing RabbitMQ retries to proceed without waiting for TTL expiration.
+- **Bounded Retries & DLQ:** Transient failures retry up to `MAX_CONSUMER_RETRIES = 3` with incremented `x-retry-count` headers. Messages exceeding bounded retries are rejected without requeue directly to the Dead-Letter Queue.
+

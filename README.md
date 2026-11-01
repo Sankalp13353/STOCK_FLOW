@@ -3,8 +3,8 @@
 [![Architecture: Modular Monolith](https://img.shields.io/badge/Architecture-Modular%20Monolith-blue.svg)](#)
 [![Database: PostgreSQL + Prisma](https://img.shields.io/badge/Database-PostgreSQL%20%7C%20Prisma-indigo.svg)](#)
 [![Backend: Node.js + TypeScript](https://img.shields.io/badge/Backend-Node.js%20%7C%20Express%20%7C%20TypeScript-green.svg)](#)
-[![Testing: Jest + Supertest](https://img.shields.io/badge/Tests-61%20Passing-brightgreen.svg)](#)
-[![Status: Phase 3 Completed](https://img.shields.io/badge/Phase-3%20Order%20%26%20Concurrency%20Complete-brightgreen.svg)](#)
+[![Testing: Jest + Supertest](https://img.shields.io/badge/Tests-88%20Passing-brightgreen.svg)](#)
+[![Status: Phase 4 Completed](https://img.shields.io/badge/Phase-4%20Event--Driven%20Architecture%20Complete-brightgreen.svg)](#)
 
 ---
 
@@ -31,6 +31,9 @@ All engineering blueprints and architecture documentation are maintained in the 
 | **[DATABASE_DESIGN.md](file:///Users/sankalp/Desktop/SDE_PRO_1/docs/DATABASE_DESIGN.md)** | **Database Design & Schema:** Normalized 3NF PostgreSQL schema, full table schemas, data types, constraints, partial indexes, and Mermaid ER diagram. |
 | **[ORDER_LIFECYCLE.md](file:///Users/sankalp/Desktop/SDE_PRO_1/docs/ORDER_LIFECYCLE.md)** | **Order Lifecycle State Machine:** Finite-state machine definitions, valid transitions matrix, invalid transitions, inventory side effects, and compensation/rollback workflows. |
 | **[API_SPECIFICATION.md](file:///Users/sankalp/Desktop/SDE_PRO_1/docs/API_SPECIFICATION.md)** | **REST API Contracts:** Standard API envelopes, endpoint contracts for Auth, Products, Warehouses, Inventory, Orders, and Payments. |
+| **[EVENT_DRIVEN_ARCHITECTURE.md](file:///Users/sankalp/Desktop/SDE_PRO_1/docs/EVENT_DRIVEN_ARCHITECTURE.md)** | **Event-Driven Architecture:** Domain event specifications, message envelope schema, asynchronous decoupled workflows, consumer idempotency, and failure recovery. |
+| **[OUTBOX_PATTERN.md](file:///Users/sankalp/Desktop/SDE_PRO_1/docs/OUTBOX_PATTERN.md)** | **Transactional Outbox Engine:** Dual-write problem analysis, atomic PostgreSQL transactions, lockless claiming via `FOR UPDATE SKIP LOCKED`, and publisher confirms. |
+| **[RABBITMQ_CONFIGURATION.md](file:///Users/sankalp/Desktop/SDE_PRO_1/docs/RABBITMQ_CONFIGURATION.md)** | **RabbitMQ Topology & Infrastructure:** Durable topic exchanges, dead-letter routing (DLX/DLQ), bounded retries, and Docker Compose orchestration. |
 
 ---
 
@@ -42,8 +45,8 @@ timeline
     Phase 1 (Completed) : Engineering Blueprint : Architecture & SRS : Database Schema & ERD : Order State Machine : REST API Contracts
     Phase 2 (Completed) : Core Backend Foundation : Express + TypeScript Setup : PostgreSQL + Prisma Schema : Auth & RBAC (JWT + bcrypt) : Product, Warehouse & Inventory APIs
     Phase 3 (Completed) : Concurrency & Order Engine : Row-Level Pessimistic Locking : Two-Phase Stock Reservation with TTL : Order State Machine & Cancellation : Idempotency Engine : Payment Simulation : Integration Stress Test (61 Tests)
-    Phase 4 (Next) : Async Infrastructure : Redis Caching & Rate Limiting : RabbitMQ Event Bus : Transactional Outbox Pattern : Background Reservation Sweeper
-    Phase 5 : Frontend & Deployment : React + TypeScript Dashboard : Docker Compose Infrastructure : CI/CD Automation
+    Phase 4 (Completed) : Event-Driven Architecture : RabbitMQ Topic Exchange & DLX : Transactional Outbox Pattern : Lockless SKIP LOCKED Claiming : Notification & Inventory Workers : Consumer Idempotency & Retries (88 Tests)
+    Phase 5 (Next) : Frontend & Production Deployment : React + TypeScript Dashboard : Redis Caching : Full Docker Compose Stack : CI/CD Automation
 ```
 
 ---
