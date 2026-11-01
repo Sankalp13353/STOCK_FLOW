@@ -5,6 +5,7 @@ process.env.DATABASE_URL =
 process.env.JWT_SECRET = 'test_jwt_secret_super_secure_key_12345';
 
 import { prisma } from '../src/database/prisma';
+import { redis } from '../src/infra/redis/redis.client';
 
 export async function clearDatabase(): Promise<void> {
   const tablenames = await prisma.$queryRaw<Array<{ tablename: string }>>`
@@ -21,6 +22,7 @@ export async function clearDatabase(): Promise<void> {
 }
 
 afterAll(async () => {
+  await redis.disconnect();
   await prisma.$disconnect();
 });
 

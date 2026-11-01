@@ -41,5 +41,13 @@ router.patch(
   productController.update
 );
 
+router.delete(
+  '/:id',
+  authenticate,
+  authorize(UserRole.ADMIN),
+  validate({ params: productIdParamSchema }),
+  productController.delete
+);
+
 export const productRouter = router;
 

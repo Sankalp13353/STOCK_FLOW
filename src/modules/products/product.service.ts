@@ -2,6 +2,9 @@ import { Product, Prisma } from '@prisma/client';
 import { prisma } from '../../database/prisma';
 import { ConflictError, NotFoundError } from '../../common/errors/app-error';
 import { CreateProductInput, ListProductsQuery, UpdateProductInput } from './product.schemas';
+import { redis } from '../../infra/redis/redis.client';
+import { env } from '../../config/env';
+import { CACHE_KEYS } from '../../config/constants';
 
 export interface PaginatedProducts {
   products: Product[];
@@ -13,7 +16,38 @@ export interface PaginatedProducts {
   };
 }
 
+export type CacheSource = 'cache' | 'database';
+
 export class ProductService {
+  /**
+   * Generates a deterministic cache key for a product detail.
+   */
+  public getDetailCacheKey(id: string): string {
+    return `${CACHE_KEYS.PRODUCT_DETAIL_PREFIX}${id}`;
+  }
+
+  /**
+   * Generates a deterministic cache key for product list queries.
+   */
+  public getListCacheKey(query: ListProductsQuery): string {
+    const page = query.page || 1;
+    const limit = query.limit || 20;
+    const search = (query.search || '').trim().toLowerCase();
+    const active = query.isActive !== undefined ? String(query.isActive) : 'all';
+    return `${CACHE_KEYS.PRODUCT_LIST_PREFIX}page=${page}:limit=${limit}:search=${search}:active=${active}`;
+  }
+
+  /**
+   * Invalidate product detail cache and all product list caches.
+   */
+  public async invalidateProductCache(id?: string): Promise<void> {
+    if (id) {
+      await redis.del(this.getDetailCacheKey(id));
+    }
+    // Invalidate all list query caches using non-blocking SCAN
+    await redis.delByPattern(`${CACHE_KEYS.PRODUCT_LIST_PREFIX}*`);
+  }
+
   public async createProduct(input: CreateProductInput): Promise<Product> {
     const existing = await prisma.product.findUnique({
       where: { sku: input.sku.toUpperCase() },
@@ -23,7 +57,7 @@ export class ProductService {
       throw new ConflictError(`Product with SKU '${input.sku}' already exists`);
     }
 
-    return prisma.product.create({
+    const product = await prisma.product.create({
       data: {
         sku: input.sku.toUpperCase(),
         name: input.name,
@@ -32,9 +66,28 @@ export class ProductService {
         isActive: input.isActive ?? true,
       },
     });
+
+    // Invalidate list caches so new product appears in listings
+    await this.invalidateProductCache();
+
+    return product;
   }
 
-  public async getProductById(id: string): Promise<Product> {
+  public async getProductByIdWithSource(
+    id: string,
+    skipCache: boolean = false
+  ): Promise<{ product: Product; source: CacheSource }> {
+    const cacheKey = this.getDetailCacheKey(id);
+
+    // 1. Try reading from Redis cache
+    if (!skipCache) {
+      const cached = await redis.get<Product>(cacheKey);
+      if (cached) {
+        return { product: cached, source: 'cache' };
+      }
+    }
+
+    // 2. Fetch from PostgreSQL on cache miss
     const product = await prisma.product.findUnique({
       where: { id },
     });
@@ -43,10 +96,34 @@ export class ProductService {
       throw new NotFoundError(`Product with ID '${id}' not found`);
     }
 
+    // 3. Populate Redis cache with configured TTL
+    if (!skipCache) {
+      await redis.set(cacheKey, product, env.CACHE_TTL);
+    }
+
+    return { product, source: 'database' };
+  }
+
+  public async getProductById(id: string, skipCache: boolean = false): Promise<Product> {
+    const { product } = await this.getProductByIdWithSource(id, skipCache);
     return product;
   }
 
-  public async listProducts(query: ListProductsQuery): Promise<PaginatedProducts> {
+  public async listProductsWithSource(
+    query: ListProductsQuery,
+    skipCache: boolean = false
+  ): Promise<{ result: PaginatedProducts; source: CacheSource }> {
+    const cacheKey = this.getListCacheKey(query);
+
+    // 1. Try reading from Redis cache
+    if (!skipCache) {
+      const cached = await redis.get<PaginatedProducts>(cacheKey);
+      if (cached) {
+        return { result: cached, source: 'cache' };
+      }
+    }
+
+    // 2. Fetch from PostgreSQL on cache miss
     const { page, limit, search, isActive } = query;
     const skip = (page - 1) * limit;
 
@@ -74,7 +151,7 @@ export class ProductService {
       }),
     ]);
 
-    return {
+    const result: PaginatedProducts = {
       products,
       pagination: {
         page,
@@ -83,6 +160,18 @@ export class ProductService {
         totalPages: Math.ceil(totalRecords / limit) || 1,
       },
     };
+
+    // 3. Populate Redis cache with configured TTL
+    if (!skipCache) {
+      await redis.set(cacheKey, result, env.CACHE_TTL);
+    }
+
+    return { result, source: 'database' };
+  }
+
+  public async listProducts(query: ListProductsQuery, skipCache: boolean = false): Promise<PaginatedProducts> {
+    const { result } = await this.listProductsWithSource(query, skipCache);
+    return result;
   }
 
   public async updateProduct(id: string, input: UpdateProductInput): Promise<Product> {
@@ -99,7 +188,7 @@ export class ProductService {
       }
     }
 
-    return prisma.product.update({
+    const updated = await prisma.product.update({
       where: { id },
       data: {
         ...(input.sku ? { sku: input.sku.toUpperCase() } : {}),
@@ -109,8 +198,26 @@ export class ProductService {
         ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
       },
     });
+
+    // Invalidate product detail cache and list caches
+    await this.invalidateProductCache(id);
+
+    return updated;
+  }
+
+  public async deleteProduct(id: string): Promise<Product> {
+    // Verify existence
+    await this.getProductById(id);
+
+    const deleted = await prisma.product.delete({
+      where: { id },
+    });
+
+    // Invalidate detail cache and list caches
+    await this.invalidateProductCache(id);
+
+    return deleted;
   }
 }
 
 export const productService = new ProductService();
-

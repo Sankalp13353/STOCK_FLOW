@@ -1,0 +1,158 @@
+name: StockFlow Controlled Release & Railway Deployment
+
+# ==============================================================================
+# STOCKFLOW CI/CD ARCHITECTURE & SAFETY GUARDS:
+# ------------------------------------------------------------------------------
+# 1. Controlled manual trigger requiring explicit operator dispatch and review.
+# 2. Deployment target is locked to 'production' until an isolated staging
+#    database branch is provisioned on Neon, preventing accidental schema
+#    mutations on the production database.
+# 3. Explicit project targeting: `--project "$RAILWAY_PROJECT_ID"` reads from
+#    `vars.RAILWAY_PROJECT_ID` (GitHub Environment variable) ensuring unambiguous
+#    project targeting without relying on local `.railway` link files.
+# 4. Attached-mode deployment: `railway up` runs without `--detach` or `--ci`,
+#    streaming build & deployment logs and blocking until the deployment reaches
+#    terminal status (passing `/health` check for API and active run for Worker).
+# 5. Environment-scoped tokens: Railway Project Tokens are scoped to a specific
+#    environment. GitHub Environment secrets (`RAILWAY_TOKEN`, `DATABASE_URL`,
+#    `DIRECT_URL`) ensure each target environment uses its own isolated credentials.
+# ==============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: 'Target Deployment Environment (locked to production; staging disabled until isolated database exists)'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+      run_database_migrations:
+        description: 'Execute Prisma Database Migrations (npx prisma migrate deploy)'
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  pre-deploy-migrations:
+    name: Execute Pre-Deploy Database Migrations
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.run_database_migrations == 'true' }}
+    environment:
+      name: ${{ github.event.inputs.deploy_target }}
+
+    steps:
+      - name: Validate Target Environment
+        run: |
+          if [ "${{ github.event.inputs.deploy_target }}" != "production" ]; then
+            echo "::error::Deployment target '${{ github.event.inputs.deploy_target }}' is not permitted. Only 'production' is currently active."
+            exit 1
+          fi
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Apply Pending Migrations to Neon Database
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+        run: |
+          echo "Applying migrations safely via direct connection to ${{ github.event.inputs.deploy_target }} database..."
+          npx prisma migrate deploy
+
+  deploy-railway:
+    name: Deploy Services to Railway
+    runs-on: ubuntu-latest
+    needs: pre-deploy-migrations
+    # Always run deployment if migrations succeeded or were explicitly skipped
+    if: |
+      always() &&
+      (needs.pre-deploy-migrations.result == 'success' || needs.pre-deploy-migrations.result == 'skipped')
+    environment:
+      name: ${{ github.event.inputs.deploy_target }}
+
+    steps:
+      - name: Validate Target Environment
+        run: |
+          if [ "${{ github.event.inputs.deploy_target }}" != "production" ]; then
+            echo "::error::Deployment target '${{ github.event.inputs.deploy_target }}' is not permitted. Only 'production' is currently active."
+            exit 1
+          fi
+
+      - name: Validate Railway Configuration
+        env:
+          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          if [ -z "$RAILWAY_PROJECT_ID" ]; then
+            echo "::error::Missing required variable: vars.RAILWAY_PROJECT_ID. Please configure vars.RAILWAY_PROJECT_ID in GitHub Environment '${{ github.event.inputs.deploy_target }}'."
+            exit 1
+          fi
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::error::Missing required secret: secrets.RAILWAY_TOKEN. Please configure secrets.RAILWAY_TOKEN in GitHub Environment '${{ github.event.inputs.deploy_target }}'."
+            exit 1
+          fi
+          echo "Railway deployment configuration validated successfully (Target Project ID configured)."
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      # ------------------------------------------------------------------------
+      # DEPLOYMENT VERIFICATION VIA ATTACHED MODE & EXPLICIT PROJECT TARGETING:
+      # Explicit `--project "$RAILWAY_PROJECT_ID"` ensures the CLI targets the
+      # correct Railway project in CI without requiring pre-committed `.railway`
+      # state files.
+      #
+      # Omission of `--detach` (fire-and-forget) and `--ci` (build-only exit)
+      # runs `railway up` in full attached mode. The CLI streams build AND
+      # deployment logs, blocking until the deployment reaches terminal status:
+      #   - stockflow-api: blocks until the container passes the HTTP /health
+      #     probe configured in railway.json.
+      #   - stockflow-worker: blocks until the container successfully boots and
+      #     enters its active running state.
+      # If either container crashes, throws an unhandled error, or fails the
+      # health check within the timeout window, `railway up` exits non-zero,
+      # immediately failing the GitHub Actions job.
+      #
+      # Deployment order: API first. If API deployment fails, the Worker is
+      # never deployed.
+      # ------------------------------------------------------------------------
+      - name: Deploy API Service to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+          RAILWAY_ENVIRONMENT: ${{ github.event.inputs.deploy_target }}
+        run: |
+          echo "Deploying stockflow-api to Railway project '$RAILWAY_PROJECT_ID' (${{ github.event.inputs.deploy_target }} environment) in attached mode..."
+          railway up --project "$RAILWAY_PROJECT_ID" --service stockflow-api --environment ${{ github.event.inputs.deploy_target }}
+
+      - name: Deploy Worker Service to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+          RAILWAY_ENVIRONMENT: ${{ github.event.inputs.deploy_target }}
+        run: |
+          echo "Deploying stockflow-worker to Railway project '$RAILWAY_PROJECT_ID' (${{ github.event.inputs.deploy_target }} environment) in attached mode..."
+          railway up --project "$RAILWAY_PROJECT_ID" --service stockflow-worker --environment ${{ github.event.inputs.deploy_target }}

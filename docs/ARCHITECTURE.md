@@ -523,3 +523,26 @@ RabbitMQ provides at-least-once message delivery. To prevent duplicate execution
 - **Immediate Failure Release:** If an unhandled exception occurs, the worker immediately deletes its `IN_PROGRESS` reservation, allowing RabbitMQ retries to proceed without waiting for TTL expiration.
 - **Bounded Retries & DLQ:** Transient failures retry up to `MAX_CONSUMER_RETRIES = 3` with incremented `x-retry-count` headers. Messages exceeding bounded retries are rejected without requeue directly to the Dead-Letter Queue.
 
+---
+
+## 11. Phase 5 Technical Implementation — Redis, Performance Optimization & Containerization
+
+### 11.1 Redis In-Memory Cache-Aside Architecture
+To eliminate database read bottlenecks on high-traffic product endpoints:
+- **Cache-Aside Pattern:** Product details and listing queries check Redis first. On cache miss, results are retrieved from PostgreSQL, written to Redis with a 60-second TTL (`CACHE_TTL`), and returned with an `X-Cache: MISS` header. Subsequent queries return in sub-millisecond time with `X-Cache: HIT`.
+- **Proactive Invalidation on Mutation:** When a product is created, updated, or deleted, all associated detail keys and paginated list keys are immediately evicted using non-blocking Redis `SCAN` pipelines.
+- **Financial Consistency Invariant:** Real-time inventory availability (`on_hand - reserved`) and active order reservations are strictly excluded from Redis caching to prevent stale overselling.
+
+### 11.2 Distributed Rate Limiting & Fail-Open Resilience
+Authentication routes (`/login` and `/register`) are guarded by Redis-backed atomic counters:
+- Atomic evaluation via Redis `PIPELINE` (`INCR` + `TTL`) tracks requests per IP.
+- Quotas exceeding `RATE_LIMIT_MAX_REQUESTS` (10 requests per 60s window) return `HTTP 429 Too Many Requests` with a `Retry-After` header.
+- **Fail-Open Strategy:** If Redis becomes unavailable, the rate limiter logs a warning and allows requests through so that authentication is never disrupted during cache downtime.
+
+### 11.3 Process Separation & Production Docker Containers
+StockFlow decouples its operational workloads into two distinct processes:
+1. **API Process (`stockflow-api`):** Serves HTTP REST traffic; does not poll outbox or consume RabbitMQ queues.
+2. **Worker Process (`stockflow-worker`):** Executes transactional outbox publisher, event consumers, and periodic reservation sweepers without binding an HTTP port.
+3. **Multi-Stage Docker Image:** Built on `node:20-alpine`, runs with an unprivileged `node` user, includes `tini` for PID 1 signal forwarding, and produces a minimal runtime footprint (~144 MB).
+4. **Docker Compose:** Manages `api`, `worker`, `redis` (persistent AOF volume), and `rabbitmq` with mutual health checks and automatic restart policies. Neon PostgreSQL remains the cloud source of truth.
+

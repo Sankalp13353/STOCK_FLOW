@@ -45,6 +45,13 @@ export const HTTP_STATUS = {
   NOT_FOUND: 404,
   CONFLICT: 409,
   UNPROCESSABLE_ENTITY: 422,
+  TOO_MANY_REQUESTS: 429,
   INTERNAL_SERVER_ERROR: 500,
+} as const;
+
+export const CACHE_KEYS = {
+  PRODUCT_DETAIL_PREFIX: 'cache:products:detail:',
+  PRODUCT_LIST_PREFIX: 'cache:products:list:',
+  RATE_LIMIT_AUTH_PREFIX: 'ratelimit:auth:',
 } as const;
 

@@ -12,7 +12,15 @@ export function createApp(): Express {
   const app = express();
 
   // 1. Global Middlewares
-  app.use(cors({ origin: env.CORS_ORIGIN, credentials: true }));
+  // Trust first proxy hop in production (Railway, AWS ALB, Cloudflare)
+  if (env.NODE_ENV === 'production') {
+    app.set('trust proxy', 1);
+  }
+
+  const allowedOrigins = env.CORS_ORIGIN.includes(',')
+    ? env.CORS_ORIGIN.split(',').map((origin) => origin.trim())
+    : env.CORS_ORIGIN;
+  app.use(cors({ origin: allowedOrigins, credentials: true }));
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
   app.use(requestLogger);

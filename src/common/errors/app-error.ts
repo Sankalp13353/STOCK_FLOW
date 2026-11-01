@@ -49,3 +49,9 @@ export class UnprocessableEntityError extends AppError {
   }
 }
 
+export class TooManyRequestsError extends AppError {
+  constructor(message: string = 'Too many requests, please try again later', code: string = 'TOO_MANY_REQUESTS', details?: unknown) {
+    super(message, 429, code, details);
+  }
+}
+

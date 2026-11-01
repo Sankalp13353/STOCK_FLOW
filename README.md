@@ -3,8 +3,8 @@
 [![Architecture: Modular Monolith](https://img.shields.io/badge/Architecture-Modular%20Monolith-blue.svg)](#)
 [![Database: PostgreSQL + Prisma](https://img.shields.io/badge/Database-PostgreSQL%20%7C%20Prisma-indigo.svg)](#)
 [![Backend: Node.js + TypeScript](https://img.shields.io/badge/Backend-Node.js%20%7C%20Express%20%7C%20TypeScript-green.svg)](#)
-[![Testing: Jest + Supertest](https://img.shields.io/badge/Tests-88%20Passing-brightgreen.svg)](#)
-[![Status: Phase 4 Completed](https://img.shields.io/badge/Phase-4%20Event--Driven%20Architecture%20Complete-brightgreen.svg)](#)
+[![Testing: Jest + Supertest](https://img.shields.io/badge/Tests-111%20Passing-brightgreen.svg)](#)
+[![Status: Phase 5 Completed](https://img.shields.io/badge/Phase-5%20Redis%20%26%20Docker%20Complete-brightgreen.svg)](#)
 
 ---
 
@@ -34,6 +34,10 @@ All engineering blueprints and architecture documentation are maintained in the 
 | **[EVENT_DRIVEN_ARCHITECTURE.md](file:///Users/sankalp/Desktop/SDE_PRO_1/docs/EVENT_DRIVEN_ARCHITECTURE.md)** | **Event-Driven Architecture:** Domain event specifications, message envelope schema, asynchronous decoupled workflows, consumer idempotency, and failure recovery. |
 | **[OUTBOX_PATTERN.md](file:///Users/sankalp/Desktop/SDE_PRO_1/docs/OUTBOX_PATTERN.md)** | **Transactional Outbox Engine:** Dual-write problem analysis, atomic PostgreSQL transactions, lockless claiming via `FOR UPDATE SKIP LOCKED`, and publisher confirms. |
 | **[RABBITMQ_CONFIGURATION.md](file:///Users/sankalp/Desktop/SDE_PRO_1/docs/RABBITMQ_CONFIGURATION.md)** | **RabbitMQ Topology & Infrastructure:** Durable topic exchanges, dead-letter routing (DLX/DLQ), bounded retries, and Docker Compose orchestration. |
+| **[REDIS_CACHING.md](file:///Users/sankalp/Desktop/SDE_PRO_1/docs/REDIS_CACHING.md)** | **Redis Caching Architecture:** In-memory Cache-Aside pattern, sub-millisecond retrieval, deterministic cache keys, non-blocking SCAN invalidation, and fail-open resilience. |
+| **[RATE_LIMITING.md](file:///Users/sankalp/Desktop/SDE_PRO_1/docs/RATE_LIMITING.md)** | **Distributed Rate Limiting:** Redis-backed sliding-window rate limiting protecting `/login` and `/register`, standard RFC headers, and fail-open security fallback. |
+| **[DOCKER_SETUP.md](file:///Users/sankalp/Desktop/SDE_PRO_1/docs/DOCKER_SETUP.md)** | **Container Architecture:** Multi-stage production Dockerfile (~144MB), API vs Worker process separation, Docker Compose configuration, health checks, and operations guide. |
+| **[PERFORMANCE_BENCHMARK.md](file:///Users/sankalp/Desktop/SDE_PRO_1/docs/PERFORMANCE_BENCHMARK.md)** | **Performance Benchmarks:** Empirical comparison of product detail and listing endpoints with vs without Redis caching (~102x speedup). |
 
 ---
 
@@ -46,7 +50,8 @@ timeline
     Phase 2 (Completed) : Core Backend Foundation : Express + TypeScript Setup : PostgreSQL + Prisma Schema : Auth & RBAC (JWT + bcrypt) : Product, Warehouse & Inventory APIs
     Phase 3 (Completed) : Concurrency & Order Engine : Row-Level Pessimistic Locking : Two-Phase Stock Reservation with TTL : Order State Machine & Cancellation : Idempotency Engine : Payment Simulation : Integration Stress Test (61 Tests)
     Phase 4 (Completed) : Event-Driven Architecture : RabbitMQ Topic Exchange & DLX : Transactional Outbox Pattern : Lockless SKIP LOCKED Claiming : Notification & Inventory Workers : Consumer Idempotency & Retries (88 Tests)
-    Phase 5 (Next) : Frontend & Production Deployment : React + TypeScript Dashboard : Redis Caching : Full Docker Compose Stack : CI/CD Automation
+    Phase 5 (Completed) : Redis & Containerization : Redis In-Memory Caching : Distributed Rate Limiting : Multi-Stage Dockerfile : API & Worker Process Separation : 100x Performance Benchmark (108 Tests)
+    Phase 6 (Next) : Frontend & CI/CD Automation : React + TypeScript Web App : GitHub Actions CI/CD : Automated Production Rollouts
 ```
 
 ---
@@ -61,8 +66,9 @@ timeline
 | **Auth** | `GET` | `/api/v1/auth/me` | Authenticated | Retrieve current user profile |
 | **Products**| `POST` | `/api/v1/products` | Admin | Create product SKU |
 | **Products**| `GET` | `/api/v1/products` | Public | List products (paginated) |
-| **Products**| `GET` | `/api/v1/products/:id` | Public | Get product details by ID |
-| **Products**| `PUT / PATCH` | `/api/v1/products/:id` | Admin | Update product details |
+| **Products**| `GET` | `/api/v1/products/:id` | Public | Get product details by ID (Redis Cached) |
+| **Products**| `PUT / PATCH` | `/api/v1/products/:id` | Admin | Update product details & invalidate cache |
+| **Products**| `DELETE` | `/api/v1/products/:id` | Admin | Delete product & invalidate cache |
 | **Warehouses**| `POST` | `/api/v1/warehouses` | Admin | Register physical warehouse |
 | **Warehouses**| `GET` | `/api/v1/warehouses` | Public | List all active warehouses |
 | **Warehouses**| `GET` | `/api/v1/warehouses/:id`| Public | Get warehouse details by ID |

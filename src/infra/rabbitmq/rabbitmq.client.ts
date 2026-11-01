@@ -38,8 +38,9 @@ export class RabbitMQClient {
     this.shouldReconnect = true;
 
     try {
-      console.log(`[RabbitMQ] Connecting to broker at ${this.maskUrl(env.RABBITMQ_URL)}...`);
-      this.connection = await amqp.connect(env.RABBITMQ_URL);
+      const targetUrl = this.normalizeUrl(env.RABBITMQ_URL);
+      console.log(`[RabbitMQ] Connecting to broker at ${this.maskUrl(targetUrl)}...`);
+      this.connection = await amqp.connect(targetUrl);
 
       this.connection.on('error', (err) => {
         console.error('[RabbitMQ] Connection error encountered:', err.message);
@@ -239,8 +240,82 @@ export class RabbitMQClient {
     }
   }
 
-  private maskUrl(url: string): string {
-    return url.replace(/:\/\/([^:]+):([^@]+)@/, '://$1:***@');
+  /**
+   * Safely normalizes the RabbitMQ URL to ensure credentials containing
+   * special characters (such as '@', ':', '#', '%', '!', '&', '/', etc.) are properly
+   * percent-encoded for amqplib / WHATWG URI parsing, avoiding double-encoding
+   * and preventing URIError on malformed percent sequences.
+   */
+  public normalizeUrl(rawUrl: string): string {
+    if (!rawUrl) return rawUrl;
+
+    const atIndex = rawUrl.lastIndexOf('@');
+    const schemeIndex = rawUrl.indexOf('://');
+
+    if (schemeIndex === -1 || atIndex === -1 || atIndex < schemeIndex) {
+      return rawUrl;
+    }
+
+    const protocol = rawUrl.substring(0, schemeIndex + 3);
+    const userInfo = rawUrl.substring(schemeIndex + 3, atIndex);
+    const hostAndRest = rawUrl.substring(atIndex + 1);
+
+    const colonIndex = userInfo.indexOf(':');
+    if (colonIndex === -1) {
+      const encodedUser = this.normalizeCredentialComponent(userInfo);
+      return `${protocol}${encodedUser}@${hostAndRest}`;
+    }
+
+    const rawUser = userInfo.substring(0, colonIndex);
+    const rawPass = userInfo.substring(colonIndex + 1);
+
+    const encodedUser = this.normalizeCredentialComponent(rawUser);
+    const encodedPass = this.normalizeCredentialComponent(rawPass);
+
+    return `${protocol}${encodedUser}:${encodedPass}@${hostAndRest}`;
+  }
+
+  /**
+   * Normalizes a single credential component (username or password).
+   * - Preserves valid percent-encoding sequences (%[0-9a-fA-F]{2}) to avoid double-encoding.
+   * - Safely encodes raw special characters (including @, :, #, %, !, &, /).
+   * - Protects against URIError from malformed percent sequences by treating
+   *   any % not followed by two hex digits as a literal % to be encoded as %25.
+   */
+  private normalizeCredentialComponent(component: string): string {
+    return component.replace(/(%[0-9a-fA-F]{2})|([^a-zA-Z0-9_.~-])/g, (_match, validEscape, otherChar) => {
+      if (validEscape) {
+        return validEscape;
+      }
+      return encodeURIComponent(otherChar);
+    });
+  }
+
+  /**
+   * Safely masks the password in a RabbitMQ URL for diagnostic logging.
+   * Never leaks any characters of the password, even if it contains '@', '#', or ':'.
+   */
+  public maskUrl(rawUrl: string): string {
+    if (!rawUrl) return rawUrl;
+
+    const atIndex = rawUrl.lastIndexOf('@');
+    const schemeIndex = rawUrl.indexOf('://');
+
+    if (schemeIndex === -1 || atIndex === -1 || atIndex < schemeIndex) {
+      return rawUrl;
+    }
+
+    const protocol = rawUrl.substring(0, schemeIndex + 3);
+    const userInfo = rawUrl.substring(schemeIndex + 3, atIndex);
+    const hostAndRest = rawUrl.substring(atIndex + 1);
+
+    const colonIndex = userInfo.indexOf(':');
+    if (colonIndex === -1) {
+      return `${protocol}***@${hostAndRest}`;
+    }
+
+    const rawUser = userInfo.substring(0, colonIndex);
+    return `${protocol}${rawUser}:***@${hostAndRest}`;
   }
 }
 
