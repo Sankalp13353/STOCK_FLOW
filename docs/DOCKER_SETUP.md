@@ -135,6 +135,24 @@ To ensure that application rollbacks are always 100% safe and zero-downtime:
 
 ## 7. Railway Deployment Verification & Environment Isolation
 
+### Service-Specific Railway Configurations (Config-as-Code)
+Railway configuration-as-code files take precedence over dashboard UI settings. To guarantee that API and Worker services run their appropriate commands and health checks:
+- **`stockflow-api`** uses `/railway.json` (or `/railway.api.json`):
+  - `startCommand`: `node dist/server.js`
+  - `healthcheckPath`: `/health` (timeout 100s)
+  - `restartPolicyType`: `ON_FAILURE` (max 10 retries)
+- **`stockflow-worker`** uses `/railway.worker.json`:
+  - `startCommand`: `node dist/worker.js`
+  - `healthcheckPath`: omitted (pure background worker, no HTTP port)
+  - `restartPolicyType`: `ON_FAILURE` (max 10 retries)
+- In the Railway Dashboard under **stockflow-worker -> Settings -> Railway Config File**, set the config file path to `/railway.worker.json`.
+
+### Mandatory Database Migrations Order
+In `.github/workflows/deploy.yml`, migrations are non-optional:
+1. `pre-deploy-migrations` runs `npx prisma migrate deploy` via direct connection (`DIRECT_URL`).
+2. `deploy-railway` only runs if migrations succeeded. Skipping migrations is not permitted.
+3. API is deployed first; Worker is deployed only after API passes health check. If any step fails, deployment immediately halts.
+
 ### Attached-Mode Deployment Verification
 In `.github/workflows/deploy.yml`:
 - Both `stockflow-api` and `stockflow-worker` are deployed using `railway up --service <name> --environment <target>` in **attached mode** (omitting both `--detach` and `--ci`).

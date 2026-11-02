@@ -87,5 +87,27 @@ describe('Docker & Containerization Configuration', () => {
       expect(composeContent).toContain('service_healthy');
     });
   });
+
+  describe('Railway Service Configurations (Config-as-Code)', () => {
+    it('should configure stockflow-api with server.js startCommand and /health check in railway.json', () => {
+      const apiConfigPath = path.join(rootDir, 'railway.json');
+      expect(fs.existsSync(apiConfigPath)).toBe(true);
+      const apiConfig = JSON.parse(fs.readFileSync(apiConfigPath, 'utf-8'));
+      expect(apiConfig.build.builder).toBe('DOCKERFILE');
+      expect(apiConfig.build.dockerfilePath).toBe('Dockerfile');
+      expect(apiConfig.deploy.startCommand).toBe('node dist/server.js');
+      expect(apiConfig.deploy.healthcheckPath).toBe('/health');
+    });
+
+    it('should configure stockflow-worker with worker.js startCommand and no health check in railway.worker.json', () => {
+      const workerConfigPath = path.join(rootDir, 'railway.worker.json');
+      expect(fs.existsSync(workerConfigPath)).toBe(true);
+      const workerConfig = JSON.parse(fs.readFileSync(workerConfigPath, 'utf-8'));
+      expect(workerConfig.build.builder).toBe('DOCKERFILE');
+      expect(workerConfig.build.dockerfilePath).toBe('Dockerfile');
+      expect(workerConfig.deploy.startCommand).toBe('node dist/worker.js');
+      expect(workerConfig.deploy.healthcheckPath).toBeUndefined();
+    });
+  });
 });
 
