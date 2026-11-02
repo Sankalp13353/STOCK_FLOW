@@ -1,25 +1,40 @@
 name: StockFlow Controlled Release & Render Deployment
 
 # ==============================================================================
-# STOCKFLOW CI/CD ARCHITECTURE & RENDER REST API DEPLOYMENT:
+# STOCKFLOW CI/CD ARCHITECTURE & RENDER FREE TIER DEPLOYMENT (API ONLY):
 # ------------------------------------------------------------------------------
 # 1. Controlled manual trigger requiring explicit operator dispatch and review.
-# 2. Database migrations run atomically via Render's native `preDeployCommand`
-#    configured on `stockflow-api` in `render.yaml` (`npx prisma migrate deploy`).
-#    If migrations fail, Render terminates the deployment with `pre_deploy_failed`
-#    and leaves previous healthy containers active.
-# 3. Deployment target is locked to 'production' until an isolated staging
-#    database branch is provisioned on Neon.
-# 4. Strict sequential release with terminal status polling:
-#    - Step 1: Trigger API (`stockflow-api`) deployment via Render REST API.
-#              Capture deploy ID and poll status every 15 seconds until 'live'.
-#              Immediately abort if status is build_failed, pre_deploy_failed,
-#              update_failed, or canceled.
-#    - Step 2: Only after API deployment reaches 'live', trigger Worker
-#              (`stockflow-worker`) deployment via Render REST API.
-#              Poll status every 15 seconds until 'live'.
-# 5. Zero credentials exposure: API keys and service IDs are stored as GitHub
-#    Environment secrets and are never echoed or leaked in command traces.
+# 2. Strict Pre-Deployment Quality Gates (Must pass before production changes):
+#    - Fresh package installation via `npm ci`
+#    - Prisma schema validation via `npx prisma validate`
+#    - TypeScript compilation via `npm run build`
+#    - Complete automated test suite via `npm test` against ephemeral services
+# 3. Mandatory Database Migrations:
+#    - Requires `DIRECT_URL` and `DATABASE_URL` secrets in GitHub Environment.
+#    - Applies pending migrations via `npx prisma migrate deploy` using the
+#      direct unpooled Neon connection. Note that Prisma does not guarantee
+#      global atomicity across the full migration process; individual migrations
+#      can commit independently before a subsequent migration fails.
+#    - If migrations fail, the deployment is aborted immediately; Render is
+#      never triggered.
+#    - Application rollback does not roll back database migrations; all migrations
+#      must remain strictly forward- and backward-compatible.
+# 4. Robust Render REST API Deployment & Status Polling:
+#    - Triggers `POST /v1/services/{serviceId}/deploys` pinned to exact `commitId`.
+#    - Handles 201 Created and 202 Accepted responses.
+#    - Safely recovers deployment IDs if omitted in 202 responses by querying
+#      `GET /v1/services/{serviceId}/deploys?createdAfter=...` and matching
+#      the creation timestamp and expected commit SHA.
+#    - Polls `GET /v1/services/{serviceId}/deploys/{deployId}` every 15s.
+#    - Terminal status handling:
+#        Success: `live`
+#        Failure: `build_failed`, `pre_deploy_failed`, `update_failed`,
+#                 `canceled`, `deactivated`
+#        Pending: `queued`, `created`, `build_in_progress`, `update_in_progress`,
+#                 `pre_deploy_in_progress`
+#    - 10-minute maximum timeout with HTTP 429 rate-limit backoff.
+# 5. Zero credentials exposure: API keys and connection strings are stored as
+#    GitHub Environment secrets and are never echoed or leaked in command traces.
 # ==============================================================================
 
 on:
@@ -37,11 +52,46 @@ permissions:
   contents: read
 
 jobs:
-  deploy-services:
-    name: Deploy to Render (API -> Migrations -> Worker)
+  validate-test-and-deploy:
+    name: Verify, Migrate & Deploy (API Only)
     runs-on: ubuntu-latest
     environment:
       name: ${{ github.event.inputs.deploy_target }}
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+      rabbitmq:
+        image: rabbitmq:3.13-management-alpine
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: stockflow_test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
 
     steps:
       - name: Validate Target Environment
@@ -54,11 +104,54 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Validate Render API Secrets
+      - name: Setup Node.js 20 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      # ------------------------------------------------------------------------
+      # A. PRE-DEPLOYMENT CHECKS (Must pass before any production changes)
+      # ------------------------------------------------------------------------
+      - name: 1. Install Dependencies
+        run: npm ci
+
+      - name: 2. Validate Prisma Schema
+        env:
+          DATABASE_URL: postgresql://test_user:test_password@localhost:5432/stockflow_test_db?schema=public
+          DIRECT_URL: postgresql://test_user:test_password@localhost:5432/stockflow_test_db?schema=public
+        run: npx prisma validate
+
+      - name: 3. Compile TypeScript
+        run: npm run build
+
+      - name: Prepare Local Ephemeral Test Database
+        env:
+          DATABASE_URL: postgresql://test_user:test_password@localhost:5432/stockflow_test_db?schema=public
+          DIRECT_URL: postgresql://test_user:test_password@localhost:5432/stockflow_test_db?schema=public
+        run: npx prisma migrate deploy
+
+      - name: 4. Run Automated Test Suite
+        env:
+          NODE_ENV: test
+          PORT: 4000
+          DATABASE_URL: postgresql://test_user:test_password@localhost:5432/stockflow_test_db?schema=public
+          TEST_DATABASE_URL: postgresql://test_user:test_password@localhost:5432/stockflow_test_db?schema=public
+          DIRECT_URL: postgresql://test_user:test_password@localhost:5432/stockflow_test_db?schema=public
+          JWT_SECRET: test_ci_super_secret_jwt_key_12345
+          REDIS_URL: redis://localhost:6379
+          RABBITMQ_URL: amqp://guest:guest@localhost:5672
+        run: npm test
+
+      # ------------------------------------------------------------------------
+      # B. MANDATORY DATABASE MIGRATIONS (Production Neon PostgreSQL)
+      # ------------------------------------------------------------------------
+      - name: Validate Production Secrets
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           RENDER_API_SERVICE_ID: ${{ secrets.RENDER_API_SERVICE_ID }}
-          RENDER_WORKER_SERVICE_ID: ${{ secrets.RENDER_WORKER_SERVICE_ID }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           MISSING=0
           if [ -z "$RENDER_API_KEY" ]; then
@@ -69,53 +162,138 @@ jobs:
             echo "::error::Missing required secret: secrets.RENDER_API_SERVICE_ID. Configure in GitHub Environment '${{ github.event.inputs.deploy_target }}'."
             MISSING=1
           fi
-          if [ -z "$RENDER_WORKER_SERVICE_ID" ]; then
-            echo "::error::Missing required secret: secrets.RENDER_WORKER_SERVICE_ID. Configure in GitHub Environment '${{ github.event.inputs.deploy_target }}'."
+          if [ -z "$DIRECT_URL" ]; then
+            echo "::error::Missing required secret: secrets.DIRECT_URL. Direct unpooled connection to Neon is required for migrations."
+            MISSING=1
+          fi
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::Missing required secret: secrets.DATABASE_URL. Pooled connection to Neon is required."
             MISSING=1
           fi
           if [ "$MISSING" -ne 0 ]; then
             exit 1
           fi
-          echo "Render API deployment secrets verified successfully."
+          echo "All required production deployment secrets verified successfully."
 
-      - name: Deploy API Service and Await Health / Migrations (stockflow-api)
+      - name: Apply Pending Database Migrations (Mandatory)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+        run: |
+          echo "Applying pending migrations to production Neon database via direct unpooled connection..."
+          npx prisma migrate deploy
+
+      # ------------------------------------------------------------------------
+      # C. TRIGGER RENDER DEPLOYMENT & POLL TERMINAL STATUS
+      # ------------------------------------------------------------------------
+      - name: Deploy API Service to Render and Await Health (stockflow-api)
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           SERVICE_ID: ${{ secrets.RENDER_API_SERVICE_ID }}
           SERVICE_NAME: "stockflow-api"
+          EXPECTED_COMMIT: ${{ github.sha }}
         run: |
           echo "=================================================="
-          echo "Step 1: Initiating deployment for $SERVICE_NAME"
+          echo "Initiating deployment for $SERVICE_NAME on Render"
           echo "Service ID: $SERVICE_ID"
+          echo "Expected Commit: $EXPECTED_COMMIT"
           echo "=================================================="
 
-          # 1. Trigger deployment
+          # 1. Record UTC timestamp immediately before triggering Render deployment
+          TRIGGER_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # 2. Trigger deployment pinned to exact validated commit (handles 201 Created and 202 Accepted)
+          DEPLOY_PAYLOAD=$(jq -nc --arg commit "$EXPECTED_COMMIT" '{"commitId": $commit}')
+
           TRIGGER_RES=$(curl -s -w "\n%{http_code}" \
             -X POST "https://api.render.com/v1/services/${SERVICE_ID}/deploys" \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${RENDER_API_KEY}")
+            -H "Authorization: Bearer ${RENDER_API_KEY}" \
+            -d "$DEPLOY_PAYLOAD")
 
           HTTP_CODE=$(echo "$TRIGGER_RES" | tail -n1)
           BODY=$(echo "$TRIGGER_RES" | sed '$d')
 
-          if [ "$HTTP_CODE" -ne 200 ] && [ "$HTTP_CODE" -ne 201 ]; then
+          if [ "$HTTP_CODE" -ne 200 ] && [ "$HTTP_CODE" -ne 201 ] && [ "$HTTP_CODE" -ne 202 ]; then
             echo "::error::Failed to trigger deployment for $SERVICE_NAME (HTTP $HTTP_CODE): $BODY"
             exit 1
           fi
 
           DEPLOY_ID=$(echo "$BODY" | jq -r '.id // .deploy.id // empty')
-          if [ -z "$DEPLOY_ID" ] || [ "$DEPLOY_ID" = "null" ]; then
-            echo "::error::Unable to parse deployment ID from Render response: $BODY"
-            exit 1
+          RETURNED_COMMIT=$(echo "$BODY" | jq -r '.commit.id // .deploy.commit.id // .commitId // .deploy.commitId // empty')
+
+          if [ -n "$RETURNED_COMMIT" ] && [ "$RETURNED_COMMIT" != "null" ]; then
+            MATCHES_COMMIT=$(jq -nr \
+              --arg ret "$RETURNED_COMMIT" \
+              --arg exp "$EXPECTED_COMMIT" \
+              '($exp | ascii_downcase | startswith($ret | ascii_downcase)) or ($ret | ascii_downcase | startswith($exp | ascii_downcase))')
+            if [ "$MATCHES_COMMIT" != "true" ]; then
+              echo "::error::Triggered deployment returned commit '$RETURNED_COMMIT' which does not match expected commit '$EXPECTED_COMMIT'."
+              exit 1
+            fi
           fi
 
-          echo "Deployment enqueued with ID: $DEPLOY_ID"
-          echo "Polling deployment status every 15s (Timeout: 10m)..."
+          # If 202 Accepted returned without ID in body, recover deployment ID using createdAfter and commit matching
+          if [ -z "$DEPLOY_ID" ] || [ "$DEPLOY_ID" = "null" ]; then
+            echo "ℹ️ Trigger returned HTTP $HTTP_CODE without inline deploy ID. Querying deploys created after $TRIGGER_TIME..."
+            LIST_RES=$(curl -s -w "\n%{http_code}" \
+              -X GET "https://api.render.com/v1/services/${SERVICE_ID}/deploys?createdAfter=${TRIGGER_TIME}&limit=20" \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer ${RENDER_API_KEY}")
+
+            LIST_CODE=$(echo "$LIST_RES" | tail -n1)
+            LIST_BODY=$(echo "$LIST_RES" | sed '$d')
+
+            if [ "$LIST_CODE" -ne 200 ]; then
+              echo "::error::Failed to query Render deployments for recovery (HTTP $LIST_CODE): $LIST_BODY"
+              exit 1
+            fi
+
+            # Match newly queued deployment using creation time and expected commit ID where available
+            MATCHED=$(echo "$LIST_BODY" | jq -r \
+              --arg trigger "$TRIGGER_TIME" \
+              --arg expected "$EXPECTED_COMMIT" '
+              [
+                .[] | (.deploy // .) |
+                select(.id != null and .createdAt != null) |
+                select(.createdAt[0:19] >= $trigger[0:19]) |
+                select(
+                  ((.commit.id // .commitId // "") | tostring | ascii_downcase) as $cid |
+                  ($expected | ascii_downcase) as $exp |
+                  if ($cid == "" or $exp == "") then
+                    true
+                  else
+                    ($exp | startswith($cid)) or ($cid | startswith($exp))
+                  end
+                )
+              ] |
+              if length == 1 then
+                .[0].id
+              elif length == 0 then
+                "NONE"
+              else
+                "AMBIGUOUS: " + ([.[].id] | join(","))
+              end
+            ')
+
+            if [ "$MATCHED" = "NONE" ] || [ -z "$MATCHED" ]; then
+              echo "::error::No deployment found created after $TRIGGER_TIME matching commit '$EXPECTED_COMMIT'. Cannot verify active deployment."
+              exit 1
+            elif [[ "$MATCHED" == AMBIGUOUS:* ]]; then
+              echo "::error::$MATCHED. Multiple deployments matched criteria created after $TRIGGER_TIME. Stopping to avoid monitoring an unrelated deployment."
+              exit 1
+            else
+              DEPLOY_ID="$MATCHED"
+            fi
+          fi
+
+          echo "Identified active Deployment ID: $DEPLOY_ID"
+          echo "Polling deployment status every 15s (Max timeout: 10 minutes)..."
 
           # 2. Poll until terminal status
           ATTEMPTS=0
-          MAX_ATTEMPTS=40
+          MAX_ATTEMPTS=40 # 40 * 15s = 600s = 10 minutes
 
           while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
             sleep 15
@@ -130,7 +308,7 @@ jobs:
             POLL_BODY=$(echo "$POLL_RES" | sed '$d')
 
             if [ "$POLL_CODE" -eq 429 ]; then
-              echo "⚠️  [Attempt $ATTEMPTS/$MAX_ATTEMPTS] Render API rate limit (429). Retrying in 15s..."
+              echo "⚠️  [Attempt $ATTEMPTS/$MAX_ATTEMPTS] Render API rate limit encountered (429). Retrying in 15s..."
               continue
             fi
 
@@ -149,106 +327,15 @@ jobs:
 
             case "$STATUS" in
               "live")
-                echo "✅ $SERVICE_NAME deployment succeeded! Container is live, database migrations applied, and healthcheck passed."
+                echo "✅ $SERVICE_NAME deployment succeeded! Container is live, healthy, and serving requests."
                 exit 0
                 ;;
-              "build_failed"|"pre_deploy_failed"|"update_failed"|"canceled")
-                echo "::error::$SERVICE_NAME deployment failed with terminal status '$STATUS'. Aborting release; worker will NOT be deployed."
-                echo "Response: $POLL_BODY"
+              "build_failed"|"pre_deploy_failed"|"update_failed"|"canceled"|"deactivated")
+                echo "::error::$SERVICE_NAME deployment terminated with failure status: $STATUS"
+                echo "Details: $POLL_BODY"
                 exit 1
                 ;;
-              "created"|"build_in_progress"|"update_in_progress"|"pre_deploy_in_progress")
-                # Active progress, continue polling
-                ;;
-              *)
-                echo "ℹ️  Status: $STATUS (monitoring...)"
-                ;;
-            esac
-          done
-
-          echo "::error::Deployment for $SERVICE_NAME timed out after 10 minutes without reaching 'live' status."
-          exit 1
-
-      - name: Deploy Worker Service and Await Health (stockflow-worker)
-        env:
-          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          SERVICE_ID: ${{ secrets.RENDER_WORKER_SERVICE_ID }}
-          SERVICE_NAME: "stockflow-worker"
-        run: |
-          echo "=================================================="
-          echo "Step 2: Initiating deployment for $SERVICE_NAME"
-          echo "Service ID: $SERVICE_ID"
-          echo "=================================================="
-
-          # 1. Trigger deployment
-          TRIGGER_RES=$(curl -s -w "\n%{http_code}" \
-            -X POST "https://api.render.com/v1/services/${SERVICE_ID}/deploys" \
-            -H "Accept: application/json" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${RENDER_API_KEY}")
-
-          HTTP_CODE=$(echo "$TRIGGER_RES" | tail -n1)
-          BODY=$(echo "$TRIGGER_RES" | sed '$d')
-
-          if [ "$HTTP_CODE" -ne 200 ] && [ "$HTTP_CODE" -ne 201 ]; then
-            echo "::error::Failed to trigger deployment for $SERVICE_NAME (HTTP $HTTP_CODE): $BODY"
-            exit 1
-          fi
-
-          DEPLOY_ID=$(echo "$BODY" | jq -r '.id // .deploy.id // empty')
-          if [ -z "$DEPLOY_ID" ] || [ "$DEPLOY_ID" = "null" ]; then
-            echo "::error::Unable to parse deployment ID from Render response: $BODY"
-            exit 1
-          fi
-
-          echo "Deployment enqueued with ID: $DEPLOY_ID"
-          echo "Polling deployment status every 15s (Timeout: 10m)..."
-
-          # 2. Poll until terminal status
-          ATTEMPTS=0
-          MAX_ATTEMPTS=40
-
-          while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
-            sleep 15
-            ATTEMPTS=$((ATTEMPTS + 1))
-
-            POLL_RES=$(curl -s -w "\n%{http_code}" \
-              -X GET "https://api.render.com/v1/services/${SERVICE_ID}/deploys/${DEPLOY_ID}" \
-              -H "Accept: application/json" \
-              -H "Authorization: Bearer ${RENDER_API_KEY}")
-
-            POLL_CODE=$(echo "$POLL_RES" | tail -n1)
-            POLL_BODY=$(echo "$POLL_RES" | sed '$d')
-
-            if [ "$POLL_CODE" -eq 429 ]; then
-              echo "⚠️  [Attempt $ATTEMPTS/$MAX_ATTEMPTS] Render API rate limit (429). Retrying in 15s..."
-              continue
-            fi
-
-            if [ "$POLL_CODE" -ne 200 ]; then
-              echo "⚠️  [Attempt $ATTEMPTS/$MAX_ATTEMPTS] Render API returned HTTP $POLL_CODE. Retrying..."
-              continue
-            fi
-
-            STATUS=$(echo "$POLL_BODY" | jq -r '.status // empty')
-            if [ -z "$STATUS" ] || [ "$STATUS" = "null" ]; then
-              echo "⚠️  [Attempt $ATTEMPTS/$MAX_ATTEMPTS] Response missing status field. Retrying..."
-              continue
-            fi
-
-            echo "⏱️  [Attempt $ATTEMPTS/$MAX_ATTEMPTS] Current status: $STATUS"
-
-            case "$STATUS" in
-              "live")
-                echo "✅ $SERVICE_NAME deployment succeeded! Background worker is active and healthy."
-                exit 0
-                ;;
-              "build_failed"|"pre_deploy_failed"|"update_failed"|"canceled")
-                echo "::error::$SERVICE_NAME deployment failed with terminal status '$STATUS'."
-                echo "Response: $POLL_BODY"
-                exit 1
-                ;;
-              "created"|"build_in_progress"|"update_in_progress"|"pre_deploy_in_progress")
+              "queued"|"created"|"build_in_progress"|"update_in_progress"|"pre_deploy_in_progress")
                 # Active progress, continue polling
                 ;;
               *)

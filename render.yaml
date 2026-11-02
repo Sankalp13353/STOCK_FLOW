@@ -1,86 +1,28 @@
 services:
   # ---------------------------------------------------------------------------
-  # 1. Web Service: stockflow-api
+  # Web Service: stockflow-api (Render Free Web Service — ₹0 Budget)
+  # ---------------------------------------------------------------------------
+  # Free tier configuration:
+  # - plan: free (0.1 CPU, 512 MB RAM, $0/month)
+  # - preDeployCommand is a paid-only feature and is omitted (migrations applied via CI or CLI)
+  # - Spins down after 15 minutes of inactivity; spins up automatically on inbound HTTP requests
+  # - Background workers, RabbitMQ, and Redis are omitted from cloud deployment to maintain ₹0 cost
+  # - Complete distributed architecture (workers, Redis, RabbitMQ) runs locally via Docker Compose
   # ---------------------------------------------------------------------------
   - type: web
     name: stockflow-api
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: starter
+    plan: free
     region: singapore
     healthCheckPath: /health
-    preDeployCommand: npx prisma migrate deploy
     autoDeploy: false
     envVars:
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
-        sync: false
-      - key: DIRECT_URL
-        sync: false
-      - key: RABBITMQ_URL
         sync: false
       - key: JWT_SECRET
         generateValue: true
-      - key: REDIS_URL
-        fromService:
-          type: keyvalue
-          name: stockflow-redis
-          property: connectionString
-
-  # ---------------------------------------------------------------------------
-  # 2. Background Worker: stockflow-worker
-  # ---------------------------------------------------------------------------
-  - type: worker
-    name: stockflow-worker
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    dockerCommand: node dist/worker.js
-    plan: starter
-    region: singapore
-    autoDeploy: false
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: DATABASE_URL
-        sync: false
-      - key: RABBITMQ_URL
-        sync: false
-      - key: REDIS_URL
-        fromService:
-          type: keyvalue
-          name: stockflow-redis
-          property: connectionString
-      - key: OUTBOX_POLL_INTERVAL_MS
-        value: "1000"
-      - key: RESERVATION_EXPIRY_SWEEPER_INTERVAL_MS
-        value: "30000"
-
-  # ---------------------------------------------------------------------------
-  # 3. Private Service: stockflow-rabbitmq
-  # ---------------------------------------------------------------------------
-  - type: pserv
-    name: stockflow-rabbitmq
-    runtime: image
-    image:
-      url: docker.io/library/rabbitmq:3.13-management-alpine
-    plan: starter
-    region: singapore
-    disk:
-      name: rabbitmq-data
-      mountPath: /var/lib/rabbitmq
-      sizeGB: 10
-    envVars:
-      - key: RABBITMQ_DEFAULT_USER
-        value: stockflow
-      - key: RABBITMQ_DEFAULT_PASS
-        sync: false
-
-  # ---------------------------------------------------------------------------
-  # 4. Key Value: stockflow-redis
-  # ---------------------------------------------------------------------------
-  - type: keyvalue
-    name: stockflow-redis
-    plan: starter
-    region: singapore
-    ipAllowList: []
+      - key: CORS_ORIGIN
+        value: "*"
