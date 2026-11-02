@@ -1,22 +1,25 @@
 name: StockFlow Controlled Release & Render Deployment
 
 # ==============================================================================
-# STOCKFLOW CI/CD ARCHITECTURE & RENDER DEPLOYMENT:
+# STOCKFLOW CI/CD ARCHITECTURE & RENDER REST API DEPLOYMENT:
 # ------------------------------------------------------------------------------
 # 1. Controlled manual trigger requiring explicit operator dispatch and review.
 # 2. Database migrations run atomically via Render's native `preDeployCommand`
 #    configured on `stockflow-api` in `render.yaml` (`npx prisma migrate deploy`).
-#    If migrations fail, Render immediately halts deployment and leaves the
-#    previous healthy containers active, eliminating the need for duplicate
-#    migration execution in GitHub Actions.
+#    If migrations fail, Render terminates the deployment with `pre_deploy_failed`
+#    and leaves previous healthy containers active.
 # 3. Deployment target is locked to 'production' until an isolated staging
 #    database branch is provisioned on Neon.
-# 4. Ordered deployment trigger via Render Deploy Hooks:
-#    - Step 1: Trigger API (`stockflow-api`) deploy hook.
-#              Render builds Dockerfile, runs `preDeployCommand` (Prisma migration),
-#              and verifies `/health` before routing traffic.
-#    - Step 2: Trigger Worker (`stockflow-worker`) deploy hook.
-#              Render builds and starts the background worker process.
+# 4. Strict sequential release with terminal status polling:
+#    - Step 1: Trigger API (`stockflow-api`) deployment via Render REST API.
+#              Capture deploy ID and poll status every 15 seconds until 'live'.
+#              Immediately abort if status is build_failed, pre_deploy_failed,
+#              update_failed, or canceled.
+#    - Step 2: Only after API deployment reaches 'live', trigger Worker
+#              (`stockflow-worker`) deployment via Render REST API.
+#              Poll status every 15 seconds until 'live'.
+# 5. Zero credentials exposure: API keys and service IDs are stored as GitHub
+#    Environment secrets and are never echoed or leaked in command traces.
 # ==============================================================================
 
 on:
@@ -34,8 +37,8 @@ permissions:
   contents: read
 
 jobs:
-  validate-and-deploy:
-    name: Trigger Render Service Deployment
+  deploy-services:
+    name: Deploy to Render (API -> Migrations -> Worker)
     runs-on: ubuntu-latest
     environment:
       name: ${{ github.event.inputs.deploy_target }}
@@ -51,47 +54,208 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Validate Render Deploy Hook Secrets
+      - name: Validate Render API Secrets
         env:
-          RENDER_API_DEPLOY_HOOK: ${{ secrets.RENDER_API_DEPLOY_HOOK }}
-          RENDER_WORKER_DEPLOY_HOOK: ${{ secrets.RENDER_WORKER_DEPLOY_HOOK }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_API_SERVICE_ID: ${{ secrets.RENDER_API_SERVICE_ID }}
+          RENDER_WORKER_SERVICE_ID: ${{ secrets.RENDER_WORKER_SERVICE_ID }}
         run: |
-          if [ -z "$RENDER_API_DEPLOY_HOOK" ]; then
-            echo "::error::Missing required secret: secrets.RENDER_API_DEPLOY_HOOK. Please configure this secret in GitHub Environment '${{ github.event.inputs.deploy_target }}'."
+          MISSING=0
+          if [ -z "$RENDER_API_KEY" ]; then
+            echo "::error::Missing required secret: secrets.RENDER_API_KEY. Configure in GitHub Environment '${{ github.event.inputs.deploy_target }}'."
+            MISSING=1
+          fi
+          if [ -z "$RENDER_API_SERVICE_ID" ]; then
+            echo "::error::Missing required secret: secrets.RENDER_API_SERVICE_ID. Configure in GitHub Environment '${{ github.event.inputs.deploy_target }}'."
+            MISSING=1
+          fi
+          if [ -z "$RENDER_WORKER_SERVICE_ID" ]; then
+            echo "::error::Missing required secret: secrets.RENDER_WORKER_SERVICE_ID. Configure in GitHub Environment '${{ github.event.inputs.deploy_target }}'."
+            MISSING=1
+          fi
+          if [ "$MISSING" -ne 0 ]; then
             exit 1
           fi
-          if [ -z "$RENDER_WORKER_DEPLOY_HOOK" ]; then
-            echo "::error::Missing required secret: secrets.RENDER_WORKER_DEPLOY_HOOK. Please configure this secret in GitHub Environment '${{ github.event.inputs.deploy_target }}'."
-            exit 1
-          fi
-          echo "Render deployment hook secrets verified."
+          echo "Render API deployment secrets verified successfully."
 
-      - name: Trigger stockflow-api Deployment (includes preDeployCommand migrations)
+      - name: Deploy API Service and Await Health / Migrations (stockflow-api)
         env:
-          RENDER_API_DEPLOY_HOOK: ${{ secrets.RENDER_API_DEPLOY_HOOK }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          SERVICE_ID: ${{ secrets.RENDER_API_SERVICE_ID }}
+          SERVICE_NAME: "stockflow-api"
         run: |
-          echo "Triggering deployment for stockflow-api..."
-          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "$RENDER_API_DEPLOY_HOOK")
-          HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS" | cut -d: -f2)
-          BODY=$(echo "$RESPONSE" | grep -v "HTTP_STATUS")
-          
-          if [ "$HTTP_STATUS" -ne 200 ] && [ "$HTTP_STATUS" -ne 201 ]; then
-            echo "::error::Failed to trigger stockflow-api deployment (HTTP $HTTP_STATUS): $BODY"
-            exit 1
-          fi
-          echo "Successfully queued deployment for stockflow-api. Render is executing preDeployCommand (Prisma migrations) followed by container healthcheck."
+          echo "=================================================="
+          echo "Step 1: Initiating deployment for $SERVICE_NAME"
+          echo "Service ID: $SERVICE_ID"
+          echo "=================================================="
 
-      - name: Trigger stockflow-worker Deployment
-        env:
-          RENDER_WORKER_DEPLOY_HOOK: ${{ secrets.RENDER_WORKER_DEPLOY_HOOK }}
-        run: |
-          echo "Triggering deployment for stockflow-worker..."
-          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "$RENDER_WORKER_DEPLOY_HOOK")
-          HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS" | cut -d: -f2)
-          BODY=$(echo "$RESPONSE" | grep -v "HTTP_STATUS")
-          
-          if [ "$HTTP_STATUS" -ne 200 ] && [ "$HTTP_STATUS" -ne 201 ]; then
-            echo "::error::Failed to trigger stockflow-worker deployment (HTTP $HTTP_STATUS): $BODY"
+          # 1. Trigger deployment
+          TRIGGER_RES=$(curl -s -w "\n%{http_code}" \
+            -X POST "https://api.render.com/v1/services/${SERVICE_ID}/deploys" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${RENDER_API_KEY}")
+
+          HTTP_CODE=$(echo "$TRIGGER_RES" | tail -n1)
+          BODY=$(echo "$TRIGGER_RES" | sed '$d')
+
+          if [ "$HTTP_CODE" -ne 200 ] && [ "$HTTP_CODE" -ne 201 ]; then
+            echo "::error::Failed to trigger deployment for $SERVICE_NAME (HTTP $HTTP_CODE): $BODY"
             exit 1
           fi
-          echo "Successfully queued deployment for stockflow-worker."
+
+          DEPLOY_ID=$(echo "$BODY" | jq -r '.id // .deploy.id // empty')
+          if [ -z "$DEPLOY_ID" ] || [ "$DEPLOY_ID" = "null" ]; then
+            echo "::error::Unable to parse deployment ID from Render response: $BODY"
+            exit 1
+          fi
+
+          echo "Deployment enqueued with ID: $DEPLOY_ID"
+          echo "Polling deployment status every 15s (Timeout: 10m)..."
+
+          # 2. Poll until terminal status
+          ATTEMPTS=0
+          MAX_ATTEMPTS=40
+
+          while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+            sleep 15
+            ATTEMPTS=$((ATTEMPTS + 1))
+
+            POLL_RES=$(curl -s -w "\n%{http_code}" \
+              -X GET "https://api.render.com/v1/services/${SERVICE_ID}/deploys/${DEPLOY_ID}" \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer ${RENDER_API_KEY}")
+
+            POLL_CODE=$(echo "$POLL_RES" | tail -n1)
+            POLL_BODY=$(echo "$POLL_RES" | sed '$d')
+
+            if [ "$POLL_CODE" -eq 429 ]; then
+              echo "⚠️  [Attempt $ATTEMPTS/$MAX_ATTEMPTS] Render API rate limit (429). Retrying in 15s..."
+              continue
+            fi
+
+            if [ "$POLL_CODE" -ne 200 ]; then
+              echo "⚠️  [Attempt $ATTEMPTS/$MAX_ATTEMPTS] Render API returned HTTP $POLL_CODE. Retrying..."
+              continue
+            fi
+
+            STATUS=$(echo "$POLL_BODY" | jq -r '.status // empty')
+            if [ -z "$STATUS" ] || [ "$STATUS" = "null" ]; then
+              echo "⚠️  [Attempt $ATTEMPTS/$MAX_ATTEMPTS] Response missing status field. Retrying..."
+              continue
+            fi
+
+            echo "⏱️  [Attempt $ATTEMPTS/$MAX_ATTEMPTS] Current status: $STATUS"
+
+            case "$STATUS" in
+              "live")
+                echo "✅ $SERVICE_NAME deployment succeeded! Container is live, database migrations applied, and healthcheck passed."
+                exit 0
+                ;;
+              "build_failed"|"pre_deploy_failed"|"update_failed"|"canceled")
+                echo "::error::$SERVICE_NAME deployment failed with terminal status '$STATUS'. Aborting release; worker will NOT be deployed."
+                echo "Response: $POLL_BODY"
+                exit 1
+                ;;
+              "created"|"build_in_progress"|"update_in_progress"|"pre_deploy_in_progress")
+                # Active progress, continue polling
+                ;;
+              *)
+                echo "ℹ️  Status: $STATUS (monitoring...)"
+                ;;
+            esac
+          done
+
+          echo "::error::Deployment for $SERVICE_NAME timed out after 10 minutes without reaching 'live' status."
+          exit 1
+
+      - name: Deploy Worker Service and Await Health (stockflow-worker)
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          SERVICE_ID: ${{ secrets.RENDER_WORKER_SERVICE_ID }}
+          SERVICE_NAME: "stockflow-worker"
+        run: |
+          echo "=================================================="
+          echo "Step 2: Initiating deployment for $SERVICE_NAME"
+          echo "Service ID: $SERVICE_ID"
+          echo "=================================================="
+
+          # 1. Trigger deployment
+          TRIGGER_RES=$(curl -s -w "\n%{http_code}" \
+            -X POST "https://api.render.com/v1/services/${SERVICE_ID}/deploys" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${RENDER_API_KEY}")
+
+          HTTP_CODE=$(echo "$TRIGGER_RES" | tail -n1)
+          BODY=$(echo "$TRIGGER_RES" | sed '$d')
+
+          if [ "$HTTP_CODE" -ne 200 ] && [ "$HTTP_CODE" -ne 201 ]; then
+            echo "::error::Failed to trigger deployment for $SERVICE_NAME (HTTP $HTTP_CODE): $BODY"
+            exit 1
+          fi
+
+          DEPLOY_ID=$(echo "$BODY" | jq -r '.id // .deploy.id // empty')
+          if [ -z "$DEPLOY_ID" ] || [ "$DEPLOY_ID" = "null" ]; then
+            echo "::error::Unable to parse deployment ID from Render response: $BODY"
+            exit 1
+          fi
+
+          echo "Deployment enqueued with ID: $DEPLOY_ID"
+          echo "Polling deployment status every 15s (Timeout: 10m)..."
+
+          # 2. Poll until terminal status
+          ATTEMPTS=0
+          MAX_ATTEMPTS=40
+
+          while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+            sleep 15
+            ATTEMPTS=$((ATTEMPTS + 1))
+
+            POLL_RES=$(curl -s -w "\n%{http_code}" \
+              -X GET "https://api.render.com/v1/services/${SERVICE_ID}/deploys/${DEPLOY_ID}" \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer ${RENDER_API_KEY}")
+
+            POLL_CODE=$(echo "$POLL_RES" | tail -n1)
+            POLL_BODY=$(echo "$POLL_RES" | sed '$d')
+
+            if [ "$POLL_CODE" -eq 429 ]; then
+              echo "⚠️  [Attempt $ATTEMPTS/$MAX_ATTEMPTS] Render API rate limit (429). Retrying in 15s..."
+              continue
+            fi
+
+            if [ "$POLL_CODE" -ne 200 ]; then
+              echo "⚠️  [Attempt $ATTEMPTS/$MAX_ATTEMPTS] Render API returned HTTP $POLL_CODE. Retrying..."
+              continue
+            fi
+
+            STATUS=$(echo "$POLL_BODY" | jq -r '.status // empty')
+            if [ -z "$STATUS" ] || [ "$STATUS" = "null" ]; then
+              echo "⚠️  [Attempt $ATTEMPTS/$MAX_ATTEMPTS] Response missing status field. Retrying..."
+              continue
+            fi
+
+            echo "⏱️  [Attempt $ATTEMPTS/$MAX_ATTEMPTS] Current status: $STATUS"
+
+            case "$STATUS" in
+              "live")
+                echo "✅ $SERVICE_NAME deployment succeeded! Background worker is active and healthy."
+                exit 0
+                ;;
+              "build_failed"|"pre_deploy_failed"|"update_failed"|"canceled")
+                echo "::error::$SERVICE_NAME deployment failed with terminal status '$STATUS'."
+                echo "Response: $POLL_BODY"
+                exit 1
+                ;;
+              "created"|"build_in_progress"|"update_in_progress"|"pre_deploy_in_progress")
+                # Active progress, continue polling
+                ;;
+              *)
+                echo "ℹ️  Status: $STATUS (monitoring...)"
+                ;;
+            esac
+          done
+
+          echo "::error::Deployment for $SERVICE_NAME timed out after 10 minutes without reaching 'live' status."
+          exit 1

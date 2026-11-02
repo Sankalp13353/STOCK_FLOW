@@ -12,10 +12,13 @@ services:
     preDeployCommand: npx prisma migrate deploy
     autoDeploy: false
     envVars:
-      - fromGroup: stockflow-shared-env
       - key: NODE_ENV
         value: production
+      - key: DATABASE_URL
+        sync: false
       - key: DIRECT_URL
+        sync: false
+      - key: RABBITMQ_URL
         sync: false
       - key: JWT_SECRET
         generateValue: true
@@ -37,9 +40,12 @@ services:
     region: singapore
     autoDeploy: false
     envVars:
-      - fromGroup: stockflow-shared-env
       - key: NODE_ENV
         value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: RABBITMQ_URL
+        sync: false
       - key: REDIS_URL
         fromService:
           type: keyvalue
@@ -78,15 +84,3 @@ services:
     plan: starter
     region: singapore
     ipAllowList: []
-
-# -----------------------------------------------------------------------------
-# Shared Environment Variables Group
-# -----------------------------------------------------------------------------
-envVarGroups:
-  - name: stockflow-shared-env
-    envVars:
-      - key: DATABASE_URL
-        sync: false
-      - key: RABBITMQ_URL
-        sync: false
-

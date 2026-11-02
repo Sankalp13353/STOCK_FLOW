@@ -65,17 +65,20 @@ StockFlow on Render is deployed as an Infrastructure-as-Code Blueprint (`render.
    * Connect your GitHub repository (`SDE_PRO_1`).
    * Select the repository branch containing `render.yaml`.
 3. **Configure Environment Secrets**:
-   During initial Blueprint creation, Render will prompt for the environment variables marked `sync: false`:
-   * **`stockflow-shared-env`**:
-     * `DATABASE_URL`: Neon pooled connection string (PgBouncer, e.g., `postgresql://user:pass@ep-pooler.region.neon.tech/stockflow?sslmode=require`).
-     * `RABBITMQ_URL`: Internal connection string with your chosen credentials (e.g., `amqp://stockflow:YourStrongPassword123!@stockflow-rabbitmq:5672`).
+   Render Blueprints do not support `sync: false` inside shared environment groups. Secrets are defined directly on each service with `sync: false`. During initial Blueprint creation, Render will prompt for the following values:
    * **`stockflow-api`**:
+     * `DATABASE_URL`: Neon pooled connection string (PgBouncer, e.g., `postgresql://user:pass@ep-pooler.region.neon.tech/stockflow?sslmode=require`).
      * `DIRECT_URL`: Neon direct connection string (unpooled, e.g., `postgresql://user:pass@ep-direct.region.neon.tech/stockflow?sslmode=require`).
+     * `RABBITMQ_URL`: Internal connection string with chosen password:
+       `amqp://stockflow:<CHOSEN_PASSWORD>@stockflow-rabbitmq:5672`
+   * **`stockflow-worker`**:
+     * `DATABASE_URL`: Set to the identical Neon pooled connection string as above.
+     * `RABBITMQ_URL`: Set to the identical `amqp://stockflow:<CHOSEN_PASSWORD>@stockflow-rabbitmq:5672` string as above.
    * **`stockflow-rabbitmq`**:
-     * `RABBITMQ_DEFAULT_PASS`: Set to the same password used in `RABBITMQ_URL` (e.g., `YourStrongPassword123!`).
+     * `RABBITMQ_DEFAULT_PASS`: Set to the same `<CHOSEN_PASSWORD>` embedded in `RABBITMQ_URL`.
 4. **Deploy**:
    * Click **Apply**.
-   * Render will automatically provision the Key Value store, RabbitMQ with its persistent disk, run database migrations, and boot the API and worker.
+   * Render will automatically provision the Key Value store, RabbitMQ with its persistent disk, run database migrations via the API's `preDeployCommand`, and boot the API and worker.
 
 ---
 
@@ -85,11 +88,11 @@ StockFlow on Render is deployed as an Infrastructure-as-Code Blueprint (`render.
 | :--- | :--- | :--- | :--- |
 | `NODE_ENV` | `stockflow-api`, `stockflow-worker` | Static (`production`) | Configures runtime production optimizations. |
 | `PORT` | `stockflow-api` | Injected by Render | Render automatically injects `$PORT` (typically 10000). Express binds to `0.0.0.0:$PORT`. |
-| `DATABASE_URL` | `stockflow-api`, `stockflow-worker` | `stockflow-shared-env` (`sync: false`) | Pooled database connection string for application runtime queries. |
+| `DATABASE_URL` | `stockflow-api`, `stockflow-worker` | Service env (`sync: false`) | Pooled database connection string for application runtime queries. |
 | `DIRECT_URL` | `stockflow-api` | Service env (`sync: false`) | Direct non-pooled database connection string used by `preDeployCommand: npx prisma migrate deploy`. |
 | `JWT_SECRET` | `stockflow-api` | Auto-generated (`generateValue: true`) | Cryptographically secure 256-bit secret used for signing and verifying user JWT tokens. |
 | `REDIS_URL` | `stockflow-api`, `stockflow-worker` | `fromService` (`stockflow-redis`) | Internal low-latency Redis URI (`redis://red-xxxx:6379`). |
-| `RABBITMQ_URL` | `stockflow-api`, `stockflow-worker` | `stockflow-shared-env` (`sync: false`) | Internal AMQP connection URI (`amqp://stockflow:***@stockflow-rabbitmq:5672`). |
+| `RABBITMQ_URL` | `stockflow-api`, `stockflow-worker` | Service env (`sync: false`) | Internal AMQP connection URI (`amqp://stockflow:***@stockflow-rabbitmq:5672`). |
 | `RABBITMQ_DEFAULT_USER` | `stockflow-rabbitmq` | Static (`stockflow`) | Default administrative user created when the persistent volume is initialized. |
 | `RABBITMQ_DEFAULT_PASS` | `stockflow-rabbitmq` | Service env (`sync: false`) | Password for the default user, matching the password in `RABBITMQ_URL`. |
 | `OUTBOX_POLL_INTERVAL_MS`| `stockflow-worker` | Static (`1000`) | Polling frequency for the transactional outbox worker. |
@@ -114,8 +117,8 @@ StockFlow on Render is deployed as an Infrastructure-as-Code Blueprint (`render.
      rabbitmqctl change_password stockflow <new_password>
      ```
   3. Update `RABBITMQ_DEFAULT_PASS` in the Render Dashboard for `stockflow-rabbitmq`.
-  4. Update `RABBITMQ_URL` in `stockflow-shared-env` to reflect the new password.
-  5. Redeploy `stockflow-api` and `stockflow-worker`.
+  4. Update `RABBITMQ_URL` on both `stockflow-api` and `stockflow-worker` to reflect the new password.
+  5. Trigger redeployment of `stockflow-api` and `stockflow-worker`.
 
 ### Credential Normalization & Log Safety
 * StockFlow's `RabbitMQClient` automatically parses `RABBITMQ_URL` with `normalizeUrl()`. Any special characters in passwords (`@`, `:`, `#`, `%`, `!`, `&`, `/`) are safely percent-encoded without double-encoding existing escapes.
@@ -138,7 +141,42 @@ StockFlow on Render is deployed as an Infrastructure-as-Code Blueprint (`render.
 
 ---
 
-## 6. Security & Private Networking
+## 6. GitHub Actions CI/CD via Render REST API
+
+The deployment workflow [`.github/workflows/deploy.yml`](file:///.github/workflows/deploy.yml) utilizes Render's REST API to enforce strict sequential releases with terminal status polling.
+
+### GitHub Production Environment Secrets
+Under GitHub Repository **Settings** -> **Environments** -> `production`, configure:
+1. `RENDER_API_KEY`: Render Personal Access Token (Account Settings -> API Keys).
+2. `RENDER_API_SERVICE_ID`: Service ID for `stockflow-api` (e.g., `srv-c...` from the service URL).
+3. `RENDER_WORKER_SERVICE_ID`: Service ID for `stockflow-worker` (e.g., `srv-c...` from the service URL).
+
+### API-First Deployment Sequence & Polling Behavior
+1. **Trigger API Deployment**:
+   ```text
+   POST https://api.render.com/v1/services/{RENDER_API_SERVICE_ID}/deploys
+   ```
+   Captures the unique deployment ID (`id`).
+2. **Poll API Deployment Status**:
+   Every 15 seconds, queries:
+   ```text
+   GET https://api.render.com/v1/services/{RENDER_API_SERVICE_ID}/deploys/{deployId}
+   ```
+   * **Success (`status == "live"`)**: Confirms the container built, `preDeployCommand` (Prisma migrations) succeeded, and the HTTP `/health` check passed. Proceed to Step 3.
+   * **Terminal Failure (`build_failed`, `pre_deploy_failed`, `update_failed`, `canceled`)**: Halts execution immediately (`exit 1`). The worker is **never** deployed, protecting production from running against mismatched schemas.
+   * **Rate Limit Handling**: HTTP 429 responses back off for 15s without failing the workflow.
+   * **Timeout**: Aborts if `live` status is not reached within 10 minutes (40 attempts).
+3. **Trigger Worker Deployment**:
+   Only after the API reaches `live`, triggers:
+   ```text
+   POST https://api.render.com/v1/services/{RENDER_WORKER_SERVICE_ID}/deploys
+   ```
+4. **Poll Worker Status**:
+   Monitors the worker deployment until it reaches `live`.
+
+---
+
+## 7. Security & Private Networking
 
 1. **Zero Public Exposure for Data Stores**:
    * `stockflow-rabbitmq` is a Private Service (`pserv`). It has no public URL and can only be reached by other services within the same Render Singapore private network.
@@ -150,7 +188,7 @@ StockFlow on Render is deployed as an Infrastructure-as-Code Blueprint (`render.
 
 ---
 
-## 7. Cost Breakdown (Singapore Region)
+## 8. Cost Breakdown (Singapore Region)
 
 | Component | Type / Plan | Monthly Cost | Notes |
 | :--- | :--- | :--- | :--- |
@@ -163,7 +201,7 @@ StockFlow on Render is deployed as an Infrastructure-as-Code Blueprint (`render.
 
 ---
 
-## 8. Rollback Safety & Guidance
+## 9. Rollback Safety & Guidance
 
 > [!CAUTION]
 > **Rollback Does NOT Reverse Database Migrations**:
@@ -178,4 +216,3 @@ To ensure rollbacks are safe:
    * If a newly deployed version exhibits application errors, navigate to the Render Dashboard -> `stockflow-api` -> **Deploys** -> Select the previous successful deploy -> Click **Rollback to this deploy**.
    * Repeat for `stockflow-worker`.
    * Because existing migrations were written backward-compatibly, the previous code version will continue running without schema conflicts.
-
