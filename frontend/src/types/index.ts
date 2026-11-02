@@ -1,4 +1,4 @@
-export type UserRole = 'ADMIN' | 'WAREHOUSE_STAFF' | 'CUSTOMER';
+export type UserRole = 'ADMIN' | 'WAREHOUSE_MANAGER' | 'WAREHOUSE_STAFF' | 'CUSTOMER';
 
 export type OrderStatus =
   | 'PENDING'
@@ -32,4 +32,9 @@ export interface ApiResponse<T = unknown> {
     pagination?: PaginationMeta;
   };
 }
+
+export * from './products';
+export * from './warehouses';
+export * from './inventory';
+
 

@@ -30,6 +30,17 @@ export class AuthController {
       next(error);
     }
   }
+
+  public async updateUserRole(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      const { role } = req.body;
+      const user = await authService.updateUserRole(id, role);
+      sendSuccess(res, user, 200);
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export const authController = new AuthController();

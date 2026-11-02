@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { UserRole } from '@prisma/client';
 import { app } from '../src/app';
+import { prisma } from '../src/database/prisma';
 import { clearDatabase } from './setup';
 import { createTestUser } from './helpers';
 
@@ -45,6 +46,15 @@ describe('Inventory Management API', () => {
         country: 'USA',
       });
     testWarehouseId = whRes.body.data.id;
+
+    // Assign warehouse staff to testWarehouseId
+    await prisma.userWarehouseAssignment.create({
+      data: {
+        userId: staff.user.id,
+        warehouseId: testWarehouseId,
+        role: UserRole.WAREHOUSE_STAFF,
+      },
+    });
   });
 
   describe('POST /api/v1/inventory/restock (and /stock)', () => {

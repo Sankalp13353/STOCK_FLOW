@@ -1,9 +1,11 @@
 import { Router } from 'express';
+import { UserRole } from '@prisma/client';
 import { authController } from './auth.controller';
 import { validate } from '../../common/middlewares/validate';
-import { authenticate } from '../../common/middlewares/auth';
+import { authenticate, authorize } from '../../common/middlewares/auth';
 import { rateLimiter } from '../../common/middlewares/rate-limiter';
 import { loginSchema, registerSchema } from './auth.schemas';
+import { userRouter } from '../users/user.routes';
 
 const router = Router();
 
@@ -22,6 +24,9 @@ router.post(
 );
 
 router.get('/me', authenticate, authController.getMe);
+
+// Mount administrative user management subroutes
+router.use('/users', userRouter);
 
 export const authRouter = router;
 

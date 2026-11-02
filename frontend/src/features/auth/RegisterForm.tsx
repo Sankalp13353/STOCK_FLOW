@@ -1,11 +1,10 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Mail, Lock, User as UserIcon, Shield } from 'lucide-react';
+import { Mail, Lock, User as UserIcon } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { Input } from '../../components/ui/Input';
 import { Button } from '../../components/ui/Button';
 import { ErrorMessage } from '../../components/ui/ErrorMessage';
-import { UserRole } from '../../types';
 
 export function RegisterForm() {
   const navigate = useNavigate();
@@ -15,7 +14,6 @@ export function RegisterForm() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [role, setRole] = useState<UserRole>('CUSTOMER');
 
   const [errors, setErrors] = useState<{
     name?: string;
@@ -74,7 +72,6 @@ export function RegisterForm() {
         fullName: name.trim(),
         email: email.trim(),
         password,
-        role,
       });
       navigate('/dashboard', { replace: true });
     } catch (err: unknown) {
@@ -124,34 +121,6 @@ export function RegisterForm() {
         autoComplete="email"
         disabled={isSubmitting}
       />
-
-      <div className="w-full">
-        <label
-          htmlFor="role-select"
-          className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5"
-        >
-          Account Role
-        </label>
-        <div className="relative rounded-lg shadow-sm">
-          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
-            <Shield className="w-4 h-4" />
-          </div>
-          <select
-            id="role-select"
-            value={role}
-            onChange={(e) => setRole(e.target.value as UserRole)}
-            disabled={isSubmitting}
-            className="block w-full rounded-lg border border-slate-300 py-2.5 pl-10 pr-3.5 bg-white text-sm text-slate-900 focus:border-brand-500 focus:ring-2 focus:ring-brand-500 focus:outline-none transition-colors disabled:bg-slate-50 disabled:text-slate-500"
-          >
-            <option value="CUSTOMER">Customer (Standard User)</option>
-            <option value="WAREHOUSE_STAFF">Warehouse Staff (Inventory Operations)</option>
-            <option value="ADMIN">Administrator (Full Access)</option>
-          </select>
-        </div>
-        <p className="mt-1 text-[11px] text-slate-400">
-          Select role permissions for testing role-based features.
-        </p>
-      </div>
 
       <Input
         label="Password"

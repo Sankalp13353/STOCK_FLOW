@@ -61,7 +61,7 @@ export class AuthService {
         email: input.email.toLowerCase(),
         passwordHash,
         fullName: input.fullName,
-        role: input.role,
+        role: UserRole.CUSTOMER, // Always assign CUSTOMER role for public registration
       },
     });
 
@@ -105,6 +105,23 @@ export class AuthService {
     }
 
     return this.formatUser(user);
+  }
+
+  public async updateUserRole(userId: string, newRole: UserRole): Promise<UserResponse> {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundError(`User with ID '${userId}' not found`);
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: { role: newRole },
+    });
+
+    return this.formatUser(updatedUser);
   }
 }
 

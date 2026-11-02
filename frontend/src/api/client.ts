@@ -38,7 +38,16 @@ apiClient.interceptors.response.use(
     const backendMessage = error.response?.data?.error?.message;
     const errorMessage = backendMessage || error.message || 'An unexpected error occurred';
 
-    return Promise.reject(new Error(errorMessage));
+    const customError = new Error(errorMessage) as Error & {
+      status?: number;
+      code?: string;
+      details?: unknown;
+    };
+    customError.status = error.response?.status;
+    customError.code = error.response?.data?.error?.code;
+    customError.details = error.response?.data?.error?.details;
+
+    return Promise.reject(customError);
   }
 );
 

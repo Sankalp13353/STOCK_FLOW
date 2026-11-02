@@ -11,6 +11,7 @@ generator client {
 enum UserRole {
   CUSTOMER
   WAREHOUSE_STAFF
+  WAREHOUSE_MANAGER
   ADMIN
 }
 
@@ -62,33 +63,35 @@ enum ProcessedEventStatus {
 }
 
 model User {
-  id           String    @id @default(uuid()) @db.Uuid
-  email        String    @unique(map: "idx_users_email") @db.VarChar(255)
-  passwordHash String    @map("password_hash") @db.VarChar(255)
-  fullName     String    @map("full_name") @db.VarChar(100)
-  role         UserRole  @default(CUSTOMER)
-  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  id                   String                    @id @default(uuid()) @db.Uuid
+  email                String                    @unique(map: "idx_users_email") @db.VarChar(255)
+  passwordHash         String                    @map("password_hash") @db.VarChar(255)
+  fullName             String                    @map("full_name") @db.VarChar(100)
+  role                 UserRole                  @default(CUSTOMER)
+  createdAt            DateTime                  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt            DateTime                  @updatedAt @map("updated_at") @db.Timestamptz
 
-  orders       Order[]
+  orders               Order[]
+  warehouseAssignments UserWarehouseAssignment[]
 
   @@map("users")
 }
 
 model Warehouse {
-  id                 String              @id @default(uuid()) @db.Uuid
-  code               String              @unique(map: "idx_warehouses_code") @db.VarChar(50)
-  name               String              @db.VarChar(150)
-  address            String              @db.VarChar(255)
-  city               String              @db.VarChar(100)
-  country            String              @db.VarChar(100)
-  isActive           Boolean             @default(true) @map("is_active")
-  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz
+  id                 String                    @id @default(uuid()) @db.Uuid
+  code               String                    @unique(map: "idx_warehouses_code") @db.VarChar(50)
+  name               String                    @db.VarChar(150)
+  address            String                    @db.VarChar(255)
+  city               String                    @db.VarChar(100)
+  country            String                    @db.VarChar(100)
+  isActive           Boolean                   @default(true) @map("is_active")
+  createdAt          DateTime                  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime                  @updatedAt @map("updated_at") @db.Timestamptz
 
   inventory          Inventory[]
   inventoryMovements InventoryMovement[]
   orderItems         OrderItem[]
+  userAssignments    UserWarehouseAssignment[]
 
   @@map("warehouses")
 }
@@ -271,4 +274,20 @@ model ProcessedEvent {
   @@unique([eventId, consumerName], map: "uq_processed_events_event_consumer")
   @@index([consumerName, status], map: "idx_processed_events_consumer_status")
   @@map("processed_events")
+}
+
+model UserWarehouseAssignment {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  warehouseId String    @map("warehouse_id") @db.Uuid
+  role        UserRole?
+  assignedAt  DateTime  @default(now()) @map("assigned_at") @db.Timestamptz
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, warehouseId], map: "uq_user_warehouse")
+  @@index([userId], map: "idx_user_warehouse_user")
+  @@index([warehouseId], map: "idx_user_warehouse_warehouse")
+  @@map("user_warehouse_assignments")
 }

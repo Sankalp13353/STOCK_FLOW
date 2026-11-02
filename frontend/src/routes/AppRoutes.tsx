@@ -5,10 +5,10 @@ import { AppLayout } from '../layouts/AppLayout';
 import { LoginPage } from '../pages/LoginPage';
 import { RegisterPage } from '../pages/RegisterPage';
 import { DashboardPage } from '../pages/DashboardPage';
+import { ProductsPage } from '../pages/ProductsPage';
+import { WarehousesPage } from '../pages/WarehousesPage';
 import {
-  ProductsPage,
   InventoryPage,
-  WarehousesPage,
   OrdersPage,
   SettingsPage,
 } from '../pages/PlaceholderPages';

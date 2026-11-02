@@ -30,6 +30,26 @@ export function authenticate(req: AuthenticatedRequest, _res: Response, next: Ne
   }
 }
 
+export function authenticateOptional(req: AuthenticatedRequest, _res: Response, next: NextFunction): void {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return next();
+  }
+
+  const token = authHeader.split(' ')[1];
+  try {
+    const decoded = jwt.verify(token, env.JWT_SECRET) as AuthenticatedUserPayload;
+    req.user = {
+      userId: decoded.userId,
+      email: decoded.email,
+      role: decoded.role,
+    };
+    next();
+  } catch {
+    next();
+  }
+}
+
 export function authorize(...allowedRoles: UserRole[]) {
   return (req: AuthenticatedRequest, _res: Response, next: NextFunction): void => {
     if (!req.user) {

@@ -5,6 +5,7 @@ import { BadRequestError, ConflictError, ForbiddenError, NotFoundError, Unproces
 import { hashPayload } from '../../common/utils/crypto';
 import { CancelOrderInput, CreateOrderInput, ListOrdersQuery } from './order.schemas';
 import { outboxService } from '../outbox/outbox.service';
+import { warehouseAccessService } from '../warehouses/warehouse-access.service';
 
 export interface OrderCreationResult {
   order: Order & {
@@ -370,15 +371,28 @@ export class OrderService {
       throw new NotFoundError(`Order with ID '${orderId}' not found`);
     }
 
-    if (user.role !== UserRole.ADMIN && order.userId !== user.userId) {
-      throw new ForbiddenError('You are not authorized to view this order');
+    if (user.role === UserRole.ADMIN || order.userId === user.userId) {
+      return order;
     }
 
-    return order;
+    if (user.role === UserRole.WAREHOUSE_MANAGER) {
+      const assignedIds = await warehouseAccessService.getAccessibleWarehouseIds(
+        user.userId,
+        user.role
+      );
+      const isAssigned = order.orderItems.some((item) =>
+        (assignedIds as string[]).includes(item.warehouseId)
+      );
+      if (isAssigned) {
+        return order;
+      }
+    }
+
+    throw new ForbiddenError('You are not authorized to view this order');
   }
 
   /**
-   * Lists customer orders (or all orders for Admin) with pagination and optional status filter.
+   * Lists customer orders (or all orders for Admin, or assigned warehouse orders for Manager) with pagination and optional status filter.
    */
   public async listOrders(query: ListOrdersQuery, user: { userId: string; role: UserRole }) {
     const { page, limit, status } = query;
@@ -386,7 +400,18 @@ export class OrderService {
 
     const where: Prisma.OrderWhereInput = {};
 
-    if (user.role !== UserRole.ADMIN) {
+    if (user.role === UserRole.ADMIN) {
+      // Admin sees all
+    } else if (user.role === UserRole.WAREHOUSE_MANAGER) {
+      const assignedIds = await warehouseAccessService.getAccessibleWarehouseIds(
+        user.userId,
+        user.role
+      );
+      where.OR = [
+        { userId: user.userId },
+        { orderItems: { some: { warehouseId: { in: assignedIds as string[] } } } },
+      ];
+    } else {
       where.userId = user.userId;
     }
 

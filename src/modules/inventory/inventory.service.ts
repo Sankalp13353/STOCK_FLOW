@@ -1,7 +1,8 @@
-import { MovementType } from '@prisma/client';
+import { MovementType, Prisma, UserRole } from '@prisma/client';
 import { prisma } from '../../database/prisma';
-import { NotFoundError } from '../../common/errors/app-error';
+import { ForbiddenError, NotFoundError } from '../../common/errors/app-error';
 import { AddStockInput, InventoryQuery } from './inventory.schemas';
+import { warehouseAccessService } from '../warehouses/warehouse-access.service';
 
 export interface RestockResult {
   inventoryId: string;
@@ -53,7 +54,10 @@ export class InventoryService {
    * Adds physical stock to a warehouse for a product.
    * Atomically upserts the inventory record and logs an immutable inventory movement.
    */
-  public async addStock(input: AddStockInput): Promise<RestockResult> {
+  public async addStock(
+    input: AddStockInput,
+    user?: { userId: string; role: UserRole }
+  ): Promise<RestockResult> {
     const { productId, warehouseId, quantity, notes } = input;
 
     // 1. Validate Product exists
@@ -70,6 +74,19 @@ export class InventoryService {
     });
     if (!warehouse) {
       throw new NotFoundError(`Warehouse with ID '${warehouseId}' not found`);
+    }
+
+    // 3. Enforce warehouse assignment permissions
+    if (user) {
+      if (user.role === UserRole.CUSTOMER) {
+        throw new ForbiddenError(
+          'Access denied. Customers are not authorized to modify warehouse inventory.',
+          'FORBIDDEN'
+        );
+      }
+      if (user.role === UserRole.WAREHOUSE_MANAGER || user.role === UserRole.WAREHOUSE_STAFF) {
+        await warehouseAccessService.ensureWarehouseAccess(user.userId, user.role, warehouseId);
+      }
     }
 
     // 3. Execute atomic transaction: Upsert inventory + Insert movement ledger
@@ -121,7 +138,10 @@ export class InventoryService {
   /**
    * Retrieves global inventory or product-specific breakdown across warehouses.
    */
-  public async getInventory(query: InventoryQuery): Promise<ProductInventoryOverview | InventoryDetail[]> {
+  public async getInventory(
+    query: InventoryQuery,
+    user?: { userId: string; role: UserRole }
+  ): Promise<ProductInventoryOverview | InventoryDetail[]> {
     if (query.productId) {
       const product = await prisma.product.findUnique({
         where: { id: query.productId },
@@ -160,9 +180,27 @@ export class InventoryService {
       };
     }
 
-    const where: { warehouseId?: string } = {};
+    // Role-based warehouse inventory query checks
+    if (user) {
+      if (user.role === UserRole.CUSTOMER) {
+        throw new ForbiddenError(
+          'Access denied. Customers are not authorized to inspect internal warehouse inventory.',
+          'FORBIDDEN'
+        );
+      }
+      if (query.warehouseId) {
+        if (user.role === UserRole.WAREHOUSE_MANAGER || user.role === UserRole.WAREHOUSE_STAFF) {
+          await warehouseAccessService.ensureWarehouseAccess(user.userId, user.role, query.warehouseId);
+        }
+      }
+    }
+
+    const where: Prisma.InventoryWhereInput = {};
     if (query.warehouseId) {
       where.warehouseId = query.warehouseId;
+    } else if (user && (user.role === UserRole.WAREHOUSE_MANAGER || user.role === UserRole.WAREHOUSE_STAFF)) {
+      const accessibleIds = await warehouseAccessService.getAccessibleWarehouseIds(user.userId, user.role);
+      where.warehouseId = { in: accessibleIds as string[] };
     }
 
     const items = await prisma.inventory.findMany({
@@ -193,12 +231,27 @@ export class InventoryService {
   /**
    * Retrieves all inventory items stored at a specific warehouse.
    */
-  public async getInventoryByWarehouse(warehouseId: string): Promise<InventoryDetail[]> {
+  public async getInventoryByWarehouse(
+    warehouseId: string,
+    user?: { userId: string; role: UserRole }
+  ): Promise<InventoryDetail[]> {
     const warehouse = await prisma.warehouse.findUnique({
       where: { id: warehouseId },
     });
     if (!warehouse) {
       throw new NotFoundError(`Warehouse with ID '${warehouseId}' not found`);
+    }
+
+    if (user) {
+      if (user.role === UserRole.CUSTOMER) {
+        throw new ForbiddenError(
+          'Access denied. Customers are not authorized to inspect internal warehouse inventory.',
+          'FORBIDDEN'
+        );
+      }
+      if (user.role === UserRole.WAREHOUSE_MANAGER || user.role === UserRole.WAREHOUSE_STAFF) {
+        await warehouseAccessService.ensureWarehouseAccess(user.userId, user.role, warehouseId);
+      }
     }
 
     const records = await prisma.inventory.findMany({
