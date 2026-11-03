@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { UserRole } from '@prisma/client';
 import { productController } from './product.controller';
 import { validate } from '../../common/middlewares/validate';
-import { authenticate, authorize } from '../../common/middlewares/auth';
+import { authenticate, authenticateOptional, authorize } from '../../common/middlewares/auth';
 import {
   createProductSchema,
   listProductsQuerySchema,
@@ -12,9 +12,9 @@ import {
 
 const router = Router();
 
-// Public / Authenticated reading
-router.get('/', validate({ query: listProductsQuerySchema }), productController.list);
-router.get('/:id', validate({ params: productIdParamSchema }), productController.getById);
+// Public / Authenticated reading (optional auth populates req.user for customer filtering)
+router.get('/', authenticateOptional, validate({ query: listProductsQuerySchema }), productController.list);
+router.get('/:id', authenticateOptional, validate({ params: productIdParamSchema }), productController.getById);
 
 // Admin-only mutations
 router.post(

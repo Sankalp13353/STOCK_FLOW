@@ -28,11 +28,12 @@ router.post(
   inventoryController.addStock
 );
 
-// Trigger expiration of stale reservations
+// Trigger administrative expiration of stale reservations (manual sweep override)
+// Automatic continuous expiration is executed in the background by worker.ts
 router.post(
   '/expire-reservations',
   authenticate,
-  authorize(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF),
+  authorize(UserRole.ADMIN),
   inventoryController.expireReservations
 );
 

@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -5,6 +6,7 @@ import {
   Boxes,
   Warehouse,
   ShoppingCart,
+  ShoppingBag,
   Settings,
   LogOut,
   X,
@@ -30,9 +32,26 @@ const NAV_ITEMS = [
 export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const { user, logout } = useAuth();
 
+  const isCustomer = user?.role === 'CUSTOMER';
+
+  const visibleNavItems = useMemo(() => {
+    if (isCustomer) {
+      return [
+        { name: 'Storefront', path: '/dashboard', icon: LayoutDashboard },
+        { name: 'Product Catalog', path: '/products', icon: Package },
+        { name: 'Shopping Cart', path: '/cart', icon: ShoppingBag },
+        { name: 'My Orders', path: '/orders', icon: ShoppingCart },
+        { name: 'Settings', path: '/settings', icon: Settings },
+      ];
+    }
+    return NAV_ITEMS;
+  }, [isCustomer]);
+
   const roleBadgeVariant =
     user?.role === 'ADMIN'
       ? 'purple'
+      : user?.role === 'WAREHOUSE_MANAGER'
+      ? 'brand'
       : user?.role === 'WAREHOUSE_STAFF'
       ? 'brand'
       : 'neutral';
@@ -84,7 +103,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
           <div className="px-3 pb-2 text-[11px] font-semibold tracking-wider uppercase text-slate-500">
             Operations
           </div>
-          {NAV_ITEMS.map((item) => {
+          {visibleNavItems.map((item) => {
             const Icon = item.icon;
             return (
               <NavLink

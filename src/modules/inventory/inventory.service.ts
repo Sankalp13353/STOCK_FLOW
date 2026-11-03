@@ -137,11 +137,32 @@ export class InventoryService {
 
   /**
    * Retrieves global inventory or product-specific breakdown across warehouses.
+   * Authorization Rules:
+   * - ADMIN: Organization-wide inventory visibility across all facilities.
+   * - WAREHOUSE_MANAGER & WAREHOUSE_STAFF: Strictly restricted to their assigned warehouses.
+   *   Aggregated figures and product breakdowns will never include stock from unauthorized facilities.
+   * - CUSTOMER: Completely forbidden from inspecting internal inventory ledgers.
    */
   public async getInventory(
     query: InventoryQuery,
     user?: { userId: string; role: UserRole }
   ): Promise<ProductInventoryOverview | InventoryDetail[]> {
+    // 1. Role-based security validation
+    if (user) {
+      if (user.role === UserRole.CUSTOMER) {
+        throw new ForbiddenError(
+          'Access denied. Customers are not authorized to inspect internal warehouse inventory.',
+          'FORBIDDEN'
+        );
+      }
+      if (query.warehouseId) {
+        if (user.role === UserRole.WAREHOUSE_MANAGER || user.role === UserRole.WAREHOUSE_STAFF) {
+          await warehouseAccessService.ensureWarehouseAccess(user.userId, user.role, query.warehouseId);
+        }
+      }
+    }
+
+    // 2. Product-specific inventory breakdown
     if (query.productId) {
       const product = await prisma.product.findUnique({
         where: { id: query.productId },
@@ -150,9 +171,24 @@ export class InventoryService {
         throw new NotFoundError(`Product with ID '${query.productId}' not found`);
       }
 
+      const where: Prisma.InventoryWhereInput = {
+        productId: query.productId,
+      };
+
+      if (query.warehouseId) {
+        where.warehouseId = query.warehouseId;
+      } else if (user && (user.role === UserRole.WAREHOUSE_MANAGER || user.role === UserRole.WAREHOUSE_STAFF)) {
+        const accessibleIds = await warehouseAccessService.getAccessibleWarehouseIds(
+          user.userId,
+          user.role
+        );
+        where.warehouseId = { in: accessibleIds as string[] };
+      }
+
       const records = await prisma.inventory.findMany({
-        where: { productId: query.productId },
+        where,
         include: { warehouse: true },
+        orderBy: { warehouse: { code: 'asc' } },
       });
 
       let totalOnHand = 0;
@@ -180,21 +216,7 @@ export class InventoryService {
       };
     }
 
-    // Role-based warehouse inventory query checks
-    if (user) {
-      if (user.role === UserRole.CUSTOMER) {
-        throw new ForbiddenError(
-          'Access denied. Customers are not authorized to inspect internal warehouse inventory.',
-          'FORBIDDEN'
-        );
-      }
-      if (query.warehouseId) {
-        if (user.role === UserRole.WAREHOUSE_MANAGER || user.role === UserRole.WAREHOUSE_STAFF) {
-          await warehouseAccessService.ensureWarehouseAccess(user.userId, user.role, query.warehouseId);
-        }
-      }
-    }
-
+    // 3. General inventory list across authorized warehouses
     const where: Prisma.InventoryWhereInput = {};
     if (query.warehouseId) {
       where.warehouseId = query.warehouseId;

@@ -15,6 +15,25 @@ export interface OrderCreationResult {
   isIdempotentReplay?: boolean;
 }
 
+/**
+ * Safely executes a read-only pre-flight query, retrying once if Prisma encounters
+ * a transient connection closure (P1017: Server has closed the connection) due to
+ * an idle connection timeout.
+ *
+ * NOTE: Never retry mutations or interactive transactions.
+ */
+async function withConnectionRetry<T>(queryFn: () => Promise<T>): Promise<T> {
+  try {
+    return await queryFn();
+  } catch (error: any) {
+    if (error?.code === 'P1017') {
+      console.warn('⚠️ [Database] Transient P1017 connection drop detected on pre-flight query. Retrying once with fresh connection...');
+      return await queryFn();
+    }
+    throw error;
+  }
+}
+
 export class OrderService {
   /**
    * Creates an order with deterministic row-level locking, availability verification,
@@ -30,9 +49,11 @@ export class OrderService {
 
     // 1. Idempotency Check (if key provided)
     if (idempotencyKey) {
-      const existingRecord = await prisma.idempotencyRecord.findUnique({
-        where: { key: idempotencyKey },
-      });
+      const existingRecord = await withConnectionRetry(() =>
+        prisma.idempotencyRecord.findUnique({
+          where: { key: idempotencyKey },
+        })
+      );
 
       if (existingRecord) {
         if (existingRecord.requestPayloadHash !== payloadHash) {
@@ -51,12 +72,14 @@ export class OrderService {
 
     // 2. Validate all products exist and are active
     const productIds = items.map((i) => i.productId);
-    const products = await prisma.product.findMany({
-      where: {
-        id: { in: productIds },
-        isActive: true,
-      },
-    });
+    const products = await withConnectionRetry(() =>
+      prisma.product.findMany({
+        where: {
+          id: { in: productIds },
+          isActive: true,
+        },
+      })
+    );
 
     if (products.length !== productIds.length) {
       const foundIds = new Set(products.map((p) => p.id));
@@ -351,6 +374,12 @@ export class OrderService {
 
   /**
    * Retrieves an order by ID with line items, warehouse allocations, reservations, and payment history.
+   * Authorization Rules:
+   * - ADMIN: Organization-wide access to any order.
+   * - CUSTOMER: Strictly access only to orders placed by themselves (order.userId === user.userId).
+   * - WAREHOUSE_MANAGER & WAREHOUSE_STAFF: Access only if at least one line item in the order
+   *   is assigned to / fulfilled by an assigned facility (Multi-Warehouse Overlap Rule).
+   *   Orders containing zero items from assigned facilities are 403 Forbidden, even if placed by the user.
    */
   public async getOrderById(orderId: string, user: { userId: string; role: UserRole }): Promise<any> {
     const order = await prisma.order.findUnique({
@@ -371,15 +400,23 @@ export class OrderService {
       throw new NotFoundError(`Order with ID '${orderId}' not found`);
     }
 
-    if (user.role === UserRole.ADMIN || order.userId === user.userId) {
+    if (user.role === UserRole.ADMIN) {
       return order;
     }
 
-    if (user.role === UserRole.WAREHOUSE_MANAGER) {
+    if (user.role === UserRole.CUSTOMER) {
+      if (order.userId === user.userId) {
+        return order;
+      }
+      throw new ForbiddenError('You are not authorized to view this order');
+    }
+
+    if (user.role === UserRole.WAREHOUSE_MANAGER || user.role === UserRole.WAREHOUSE_STAFF) {
       const assignedIds = await warehouseAccessService.getAccessibleWarehouseIds(
         user.userId,
         user.role
       );
+      // Multi-Warehouse Access Rule: User can view order only if at least one item belongs to an assigned warehouse
       const isAssigned = order.orderItems.some((item) =>
         (assignedIds as string[]).includes(item.warehouseId)
       );
@@ -392,7 +429,10 @@ export class OrderService {
   }
 
   /**
-   * Lists customer orders (or all orders for Admin, or assigned warehouse orders for Manager) with pagination and optional status filter.
+   * Lists orders with role-based boundaries and pagination:
+   * - ADMIN: Organization-wide order listing.
+   * - WAREHOUSE_MANAGER & WAREHOUSE_STAFF: Only orders containing items fulfilled by their assigned warehouses.
+   * - CUSTOMER: Strictly restricted to their own submitted orders (where.userId === user.userId).
    */
   public async listOrders(query: ListOrdersQuery, user: { userId: string; role: UserRole }) {
     const { page, limit, status } = query;
@@ -401,17 +441,19 @@ export class OrderService {
     const where: Prisma.OrderWhereInput = {};
 
     if (user.role === UserRole.ADMIN) {
-      // Admin sees all
-    } else if (user.role === UserRole.WAREHOUSE_MANAGER) {
+      // Organization-wide visibility
+    } else if (user.role === UserRole.WAREHOUSE_MANAGER || user.role === UserRole.WAREHOUSE_STAFF) {
       const assignedIds = await warehouseAccessService.getAccessibleWarehouseIds(
         user.userId,
         user.role
       );
-      where.OR = [
-        { userId: user.userId },
-        { orderItems: { some: { warehouseId: { in: assignedIds as string[] } } } },
-      ];
+      where.orderItems = {
+        some: {
+          warehouseId: { in: assignedIds as string[] },
+        },
+      };
     } else {
+      // CUSTOMER: Strictly own orders
       where.userId = user.userId;
     }
 

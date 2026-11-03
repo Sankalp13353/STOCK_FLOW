@@ -35,3 +35,24 @@ export interface WarehouseInventoryItem {
   };
 }
 
+export interface RestockInput {
+  productId: string;
+  warehouseId: string;
+  quantity: number;
+  notes?: string;
+}
+
+export interface RestockResult {
+  inventoryId: string;
+  productId: string;
+  warehouseId: string;
+  quantityOnHand: number;
+  quantityReserved: number;
+  quantityAvailable: number;
+  movementId: string;
+}
+
+export interface ExpireReservationsResult {
+  expiredCount: number;
+  restockedCount: number;
+}

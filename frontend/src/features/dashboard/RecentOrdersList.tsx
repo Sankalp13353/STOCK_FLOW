@@ -1,9 +1,10 @@
+import { Link } from 'react-router-dom';
 import { OrderSummary } from '../../types/dashboard';
 import { Card, CardHeader, CardContent } from '../../components/ui/Card';
 import { Badge, BadgeVariant } from '../../components/ui/Badge';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { formatCurrencyCents, formatDate, formatShortId } from '../../utils/formatters';
-import { ShoppingCart } from 'lucide-react';
+import { ShoppingCart, ArrowRight } from 'lucide-react';
 
 interface RecentOrdersListProps {
   orders: OrderSummary[];
@@ -61,13 +62,19 @@ export function RecentOrdersList({ orders, isLoading }: RecentOrdersListProps) {
                   <th className="py-3 px-4">Address</th>
                   <th className="py-3 px-4 text-right">Amount</th>
                   <th className="py-3 px-4 text-right">Created</th>
+                  <th className="py-3 px-4 text-right">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {orders.map((order) => (
                   <tr key={order.id} className="hover:bg-slate-50/80 transition-colors">
                     <td className="py-3 px-4 font-mono font-medium text-slate-900">
-                      {formatShortId(order.id)}
+                      <Link
+                        to={`/orders/${order.id}`}
+                        className="text-brand-600 hover:text-brand-800 hover:underline"
+                      >
+                        {formatShortId(order.id)}
+                      </Link>
                     </td>
                     <td className="py-3 px-4">
                       <Badge variant={getStatusBadgeVariant(order.status)} size="sm">
@@ -83,6 +90,15 @@ export function RecentOrdersList({ orders, isLoading }: RecentOrdersListProps) {
                     <td className="py-3 px-4 text-right text-slate-500">
                       {formatDate(order.createdAt)}
                     </td>
+                    <td className="py-3 px-4 text-right">
+                      <Link
+                        to={`/orders/${order.id}`}
+                        className="inline-flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-800"
+                      >
+                        Track
+                        <ArrowRight className="w-3 h-3" />
+                      </Link>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -93,4 +109,3 @@ export function RecentOrdersList({ orders, isLoading }: RecentOrdersListProps) {
     </Card>
   );
 }
-

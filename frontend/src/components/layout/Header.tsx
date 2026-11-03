@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
-import { Menu, Bell, LogOut, ChevronDown } from 'lucide-react';
+import { useLocation, Link } from 'react-router-dom';
+import { Menu, Bell, LogOut, ChevronDown, ShoppingCart } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
+import { useCart } from '../../context/CartContext';
 import { Badge } from '../ui/Badge';
 
 interface HeaderProps {
@@ -10,6 +11,7 @@ interface HeaderProps {
 
 export function Header({ onOpenSidebar }: HeaderProps) {
   const { user, logout } = useAuth();
+  const { totalItems } = useCart();
   const location = useLocation();
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -66,6 +68,21 @@ export function Header({ onOpenSidebar }: HeaderProps) {
           <Bell className="w-4 h-4" />
           <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-brand-600 rounded-full" />
         </button>
+
+        {/* Shopping Cart Button */}
+        <Link
+          to="/cart"
+          className="relative p-2 rounded-lg text-slate-600 hover:text-brand-600 hover:bg-slate-100 focus:outline-none transition-colors"
+          title="View Shopping Cart"
+          aria-label="Shopping Cart"
+        >
+          <ShoppingCart className="w-4 h-4" />
+          {totalItems > 0 && (
+            <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 bg-brand-600 text-white text-[10px] font-bold rounded-full flex items-center justify-center shadow-xs">
+              {totalItems}
+            </span>
+          )}
+        </Link>
 
         {/* User Profile Dropdown Menu */}
         <div className="relative" ref={dropdownRef}>

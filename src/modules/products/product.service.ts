@@ -1,4 +1,4 @@
-import { Product, Prisma } from '@prisma/client';
+import { Product, Prisma, UserRole } from '@prisma/client';
 import { prisma } from '../../database/prisma';
 import { ConflictError, NotFoundError } from '../../common/errors/app-error';
 import { CreateProductInput, ListProductsQuery, UpdateProductInput } from './product.schemas';
@@ -29,11 +29,11 @@ export class ProductService {
   /**
    * Generates a deterministic cache key for product list queries.
    */
-  public getListCacheKey(query: ListProductsQuery): string {
+  public getListCacheKey(query: ListProductsQuery, isCustomer: boolean = false): string {
     const page = query.page || 1;
     const limit = query.limit || 20;
     const search = (query.search || '').trim().toLowerCase();
-    const active = query.isActive !== undefined ? String(query.isActive) : 'all';
+    const active = isCustomer ? 'true' : query.isActive !== undefined ? String(query.isActive) : 'all';
     return `${CACHE_KEYS.PRODUCT_LIST_PREFIX}page=${page}:limit=${limit}:search=${search}:active=${active}`;
   }
 
@@ -75,7 +75,8 @@ export class ProductService {
 
   public async getProductByIdWithSource(
     id: string,
-    skipCache: boolean = false
+    skipCache: boolean = false,
+    user?: { userId: string; role: UserRole }
   ): Promise<{ product: Product; source: CacheSource }> {
     const cacheKey = this.getDetailCacheKey(id);
 
@@ -83,6 +84,9 @@ export class ProductService {
     if (!skipCache) {
       const cached = await redis.get<Product>(cacheKey);
       if (cached) {
+        if (user?.role === UserRole.CUSTOMER && !cached.isActive) {
+          throw new NotFoundError(`Product with ID '${id}' not found`);
+        }
         return { product: cached, source: 'cache' };
       }
     }
@@ -96,6 +100,11 @@ export class ProductService {
       throw new NotFoundError(`Product with ID '${id}' not found`);
     }
 
+    const isCustomer = !user || user.role === UserRole.CUSTOMER;
+    if (isCustomer && !product.isActive) {
+      throw new NotFoundError(`Product with ID '${id}' not found`);
+    }
+
     // 3. Populate Redis cache with configured TTL
     if (!skipCache) {
       await redis.set(cacheKey, product, env.CACHE_TTL);
@@ -104,16 +113,22 @@ export class ProductService {
     return { product, source: 'database' };
   }
 
-  public async getProductById(id: string, skipCache: boolean = false): Promise<Product> {
-    const { product } = await this.getProductByIdWithSource(id, skipCache);
+  public async getProductById(
+    id: string,
+    skipCache: boolean = false,
+    user?: { userId: string; role: UserRole }
+  ): Promise<Product> {
+    const { product } = await this.getProductByIdWithSource(id, skipCache, user);
     return product;
   }
 
   public async listProductsWithSource(
     query: ListProductsQuery,
-    skipCache: boolean = false
+    skipCache: boolean = false,
+    user?: { userId: string; role: UserRole }
   ): Promise<{ result: PaginatedProducts; source: CacheSource }> {
-    const cacheKey = this.getListCacheKey(query);
+    const isCustomer = !user || user.role === UserRole.CUSTOMER;
+    const cacheKey = this.getListCacheKey(query, isCustomer);
 
     // 1. Try reading from Redis cache
     if (!skipCache) {
@@ -129,7 +144,10 @@ export class ProductService {
 
     const where: Prisma.ProductWhereInput = {};
 
-    if (typeof isActive === 'boolean') {
+    // Customers must strictly never see inactive products
+    if (isCustomer) {
+      where.isActive = true;
+    } else if (typeof isActive === 'boolean') {
       where.isActive = isActive;
     }
 
@@ -169,8 +187,12 @@ export class ProductService {
     return { result, source: 'database' };
   }
 
-  public async listProducts(query: ListProductsQuery, skipCache: boolean = false): Promise<PaginatedProducts> {
-    const { result } = await this.listProductsWithSource(query, skipCache);
+  public async listProducts(
+    query: ListProductsQuery,
+    skipCache: boolean = false,
+    user?: { userId: string; role: UserRole }
+  ): Promise<PaginatedProducts> {
+    const { result } = await this.listProductsWithSource(query, skipCache, user);
     return result;
   }
 

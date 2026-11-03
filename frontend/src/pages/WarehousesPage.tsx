@@ -50,6 +50,20 @@ export function WarehousesPage() {
     isActive: statusFilter === 'all' ? undefined : statusFilter === 'true',
   };
 
+  if (user?.role === 'CUSTOMER') {
+    return (
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-12 text-center max-w-lg mx-auto mt-12">
+        <EmptyState
+          icon={<ShieldAlert className="w-10 h-10 text-rose-500" />}
+          title="Access Denied"
+          description="Internal warehouse distribution centers and operational terminals are restricted to warehouse management, operational staff, and system administrators."
+          actionLabel="View Products Catalog"
+          onAction={() => (window.location.href = '/products')}
+        />
+      </div>
+    );
+  }
+
   const {
     data: warehouses,
     isLoading,
@@ -228,11 +242,19 @@ export function WarehousesPage() {
         <div className="bg-white rounded-xl border border-slate-200 p-6">
           <EmptyState
             icon={<WarehouseIcon className="w-8 h-8 text-slate-400" />}
-            title="No warehouses found"
+            title={
+              searchInput || statusFilter !== 'all'
+                ? 'No warehouses found'
+                : isAdmin
+                ? 'No warehouses registered'
+                : 'No warehouses assigned yet. Contact your administrator.'
+            }
             description={
               searchInput || statusFilter !== 'all'
                 ? 'No warehouse facilities match your search query or status filter.'
-                : 'No warehouse distribution centers are currently registered in StockFlow.'
+                : isAdmin
+                ? 'No warehouse distribution centers are currently registered in StockFlow.'
+                : 'You currently have no warehouse facilities assigned to your user account. Please contact an administrator to provision access.'
             }
             actionLabel={
               searchInput || statusFilter !== 'all'

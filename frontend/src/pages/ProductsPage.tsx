@@ -10,6 +10,7 @@ import { Pagination } from '../components/ui/Pagination';
 import { ProductFormModal } from '../features/products/ProductFormModal';
 import { ProductDeleteModal } from '../features/products/ProductDeleteModal';
 import { ProductDetailModal } from '../features/products/ProductDetailModal';
+import { CustomerCatalogView } from '../features/catalog/CustomerCatalogView';
 import { fetchProducts } from '../api/products';
 import { Product } from '../types';
 import { useAuth } from '../hooks/useAuth';
@@ -31,6 +32,10 @@ export function ProductsPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === 'ADMIN';
   const queryClient = useQueryClient();
+
+  if (user?.role === 'CUSTOMER') {
+    return <CustomerCatalogView />;
+  }
 
   // Query filter state
   const [page, setPage] = useState(1);

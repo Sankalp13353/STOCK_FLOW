@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { productService } from './product.service';
 import { sendSuccess } from '../../common/utils/response';
+import { AuthenticatedRequest } from '../../common/types';
 
 export class ProductController {
   public async create(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -12,10 +13,11 @@ export class ProductController {
     }
   }
 
-  public async getById(req: Request, res: Response, next: NextFunction): Promise<void> {
+  public async getById(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-      const { product, source } = await productService.getProductByIdWithSource(id);
+      const user = req.user ? { userId: req.user.userId, role: req.user.role } : undefined;
+      const { product, source } = await productService.getProductByIdWithSource(id, false, user);
       res.setHeader('X-Cache', source === 'cache' ? 'HIT' : 'MISS');
       sendSuccess(res, product, 200);
     } catch (error) {
@@ -23,9 +25,10 @@ export class ProductController {
     }
   }
 
-  public async list(req: Request, res: Response, next: NextFunction): Promise<void> {
+  public async list(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { result, source } = await productService.listProductsWithSource(req.query as any);
+      const user = req.user ? { userId: req.user.userId, role: req.user.role } : undefined;
+      const { result, source } = await productService.listProductsWithSource(req.query as any, false, user);
       res.setHeader('X-Cache', source === 'cache' ? 'HIT' : 'MISS');
       sendSuccess(res, result.products, 200, { pagination: result.pagination });
     } catch (error) {

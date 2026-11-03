@@ -7,6 +7,7 @@ import { errorHandler } from './common/middlewares/error-handler';
 import { NotFoundError } from './common/errors/app-error';
 import { sendSuccess } from './common/utils/response';
 import { rootRouter } from './routes';
+import { checkDatabaseConnection } from './database/prisma';
 
 export function createApp(): Express {
   const app = express();
@@ -25,14 +26,38 @@ export function createApp(): Express {
   app.use(express.urlencoded({ extended: true }));
   app.use(requestLogger);
 
-  // 2. Health Check
-  const healthHandler = (_req: Request, res: Response) => {
-    sendSuccess(res, {
-      status: 'UP',
-      service: 'stockflow-backend',
-      timestamp: new Date().toISOString(),
-      uptimeSeconds: Math.floor(process.uptime()),
-    });
+  // 2. Health Check (actively validates database connection)
+  const healthHandler = async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const dbCheck = await checkDatabaseConnection();
+      const isHealthy = dbCheck.healthy;
+      const status = isHealthy ? 'UP' : 'DEGRADED';
+      const statusCode = isHealthy ? 200 : 503;
+
+      if (!isHealthy && dbCheck.error) {
+        console.error('❌ [HealthCheck] Database connectivity check failed:', dbCheck.error);
+      }
+
+      res.status(statusCode).json({
+        success: isHealthy,
+        data: {
+          status,
+          service: 'stockflow-backend',
+          database: {
+            status: isHealthy ? 'UP' : 'DOWN',
+            ...(isHealthy && dbCheck.latencyMs !== undefined ? { latencyMs: dbCheck.latencyMs } : {}),
+            ...(!isHealthy ? { message: 'Database connection unavailable' } : {}),
+          },
+          timestamp: new Date().toISOString(),
+          uptimeSeconds: Math.floor(process.uptime()),
+        },
+        meta: {
+          timestamp: new Date().toISOString(),
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
   };
 
   app.get('/health', healthHandler);
