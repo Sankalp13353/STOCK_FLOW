@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   Boxes,
   Package,
@@ -9,12 +10,14 @@ import {
   Search,
   Plus,
   MapPin,
+  Sliders,
 } from 'lucide-react';
 import { Warehouse, WarehouseInventoryItem, UserRole } from '../../types';
 import { StatCard } from './StatCard';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { formatCurrencyCents, formatNumber } from '../../utils/formatters';
+import { fetchThresholds } from '../../api/inventory';
 
 interface SelectedWarehouseOverviewProps {
   warehouse: Warehouse;
@@ -25,6 +28,7 @@ interface SelectedWarehouseOverviewProps {
   onOpenRestock: (productId?: string) => void;
   onExpireReservations: () => void;
   isExpiringReservations: boolean;
+  onOpenThresholds?: () => void;
 }
 
 export function SelectedWarehouseOverview({
@@ -36,11 +40,35 @@ export function SelectedWarehouseOverview({
   onOpenRestock,
   onExpireReservations,
   isExpiringReservations,
+  onOpenThresholds,
 }: SelectedWarehouseOverviewProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterMode, setFilterMode] = useState<'all' | 'low' | 'out'>('all');
 
   const isAdmin = userRole === 'ADMIN';
+  const isManager = userRole === 'WAREHOUSE_MANAGER';
+
+  // Fetch thresholds for this warehouse to evaluate true minimum stock thresholds
+  const { data: thresholds = [] } = useQuery({
+    queryKey: ['thresholds'],
+    queryFn: () => fetchThresholds(),
+    staleTime: 30 * 1000,
+  });
+
+  // Map threshold per product: warehouse override takes priority over global default
+  const thresholdMap = useMemo(() => {
+    const map = new Map<string, { minQuantity: number; isOverride: boolean }>();
+    for (const t of thresholds) {
+      if (t.warehouseId === warehouse.id) {
+        // Warehouse override
+        map.set(t.productId, { minQuantity: t.minQuantity, isOverride: true });
+      } else if (!t.warehouseId && !map.has(t.productId)) {
+        // Global default fallback
+        map.set(t.productId, { minQuantity: t.minQuantity, isOverride: false });
+      }
+    }
+    return map;
+  }, [thresholds, warehouse.id]);
 
   // Compute metrics from real backend responses
   const totalSKUs = inventory.length;
@@ -48,10 +76,14 @@ export function SelectedWarehouseOverview({
   const totalReserved = inventory.reduce((sum, item) => sum + (item.quantityReserved || 0), 0);
   const totalAvailable = inventory.reduce((sum, item) => sum + (item.quantityAvailable || 0), 0);
 
-  // Identify low stock items (available <= 20) and out of stock items (available <= 0)
+  // Identify low stock items based on configured thresholds (or available <= 0 for out of stock)
   const lowStockItems = useMemo(() => {
-    return inventory.filter((item) => item.quantityAvailable > 0 && item.quantityAvailable <= 20);
-  }, [inventory]);
+    return inventory.filter((item) => {
+      if (item.quantityAvailable <= 0) return false;
+      const th = thresholdMap.get(item.productId);
+      return th !== undefined ? item.quantityAvailable < th.minQuantity : false;
+    });
+  }, [inventory, thresholdMap]);
 
   const outOfStockItems = useMemo(() => {
     return inventory.filter((item) => item.quantityAvailable <= 0);
@@ -67,11 +99,14 @@ export function SelectedWarehouseOverview({
 
       if (!matchesSearch) return false;
 
-      if (filterMode === 'low') return item.quantityAvailable > 0 && item.quantityAvailable <= 20;
+      if (filterMode === 'low') {
+        const th = thresholdMap.get(item.productId);
+        return item.quantityAvailable > 0 && th !== undefined && item.quantityAvailable < th.minQuantity;
+      }
       if (filterMode === 'out') return item.quantityAvailable <= 0;
       return true;
     });
-  }, [inventory, searchQuery, filterMode]);
+  }, [inventory, searchQuery, filterMode, thresholdMap]);
 
   return (
     <div className="space-y-6">
@@ -120,6 +155,20 @@ export function SelectedWarehouseOverview({
                 title="Trigger automated sweep of stale unconfirmed stock reservations across warehouses"
               >
                 Expire Reservations
+              </Button>
+            )}
+
+            {/* Stock Thresholds: Available to ADMIN and WAREHOUSE_MANAGER */}
+            {(isAdmin || isManager) && onOpenThresholds && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={onOpenThresholds}
+                className="text-purple-700 border-purple-300 hover:bg-purple-50"
+                leftIcon={<Sliders className="w-3.5 h-3.5 text-purple-600" />}
+                title="Configure minimum stock thresholds and reorder points"
+              >
+                Stock Thresholds
               </Button>
             )}
 
@@ -186,7 +235,7 @@ export function SelectedWarehouseOverview({
               )}
               {lowStockItems.length > 0 && (
                 <span>
-                  {lowStockItems.length} SKU{lowStockItems.length > 1 ? 's have' : ' has'} low stock (≤ 20 available units).
+                  {lowStockItems.length} SKU{lowStockItems.length > 1 ? 's have' : ' has'} available stock below configured minimum threshold.
                 </span>
               )}
             </div>
@@ -300,7 +349,8 @@ export function SelectedWarehouseOverview({
               <tbody className="divide-y divide-slate-100 bg-white">
                 {filteredInventory.map((item) => {
                   const isOutOfStock = item.quantityAvailable <= 0;
-                  const isLowStock = !isOutOfStock && item.quantityAvailable <= 20;
+                  const th = thresholdMap.get(item.productId);
+                  const isLowStock = !isOutOfStock && th !== undefined && item.quantityAvailable < th.minQuantity;
 
                   return (
                     <tr key={item.id} className="hover:bg-slate-50/70 transition-colors">

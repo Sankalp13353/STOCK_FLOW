@@ -4,6 +4,7 @@ import { BadRequestError, ForbiddenError, NotFoundError, UnprocessableEntityErro
 import { ProcessPaymentInput } from './payment.schemas';
 import { EVENT_TYPES } from '../../config/constants';
 import { outboxService } from '../outbox/outbox.service';
+import { thresholdEvaluationService } from '../inventory/threshold-evaluation.service';
 
 export interface PaymentProcessResult {
   payment: Payment;
@@ -46,6 +47,12 @@ export class PaymentService {
       // 3. State verification
       if (order.status === OrderStatus.CONFIRMED) {
         throw new UnprocessableEntityError('Order is already confirmed and paid');
+      }
+
+      if (order.status === OrderStatus.PENDING) {
+        throw new UnprocessableEntityError(
+          'Cannot process payment for an order awaiting shortage approval and customer decision'
+        );
       }
 
       if (
@@ -133,6 +140,15 @@ export class PaymentService {
           },
         });
 
+        // Evaluate stock against threshold following payment fulfillment commit
+        order.inventoryReservations.forEach((res) => {
+          thresholdEvaluationService
+            .evaluateStockAfterChange(res.inventory.productId, res.inventory.warehouseId)
+            .catch((err) => {
+              console.error('Failed to evaluate threshold after payment confirmation:', err);
+            });
+        });
+
         return {
           payment,
           orderId,
@@ -204,6 +220,15 @@ export class PaymentService {
             failureReason: payment.failureReason || 'Simulated bank decline',
             failedAt: new Date().toISOString(),
           },
+        });
+
+        // Evaluate stock against threshold following reservation release on failed payment
+        order.inventoryReservations.forEach((res) => {
+          thresholdEvaluationService
+            .evaluateStockAfterChange(res.inventory.productId, res.inventory.warehouseId)
+            .catch((err) => {
+              console.error('Failed to evaluate threshold after payment failure release:', err);
+            });
         });
 
         return {

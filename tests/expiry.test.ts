@@ -80,7 +80,9 @@ describe('Reservation Expiry Sweeper API', () => {
 
   it('should expire only stale reservations and restore available inventory', async () => {
     // Before sweep: totalReserved = 3 + 2 = 5, available = 5
-    let inv = await request(app).get(`/api/v1/inventory?productId=${productId}`);
+    let inv = await request(app)
+      .get(`/api/v1/inventory?productId=${productId}`)
+      .set('Authorization', `Bearer ${adminToken}`);
     expect(inv.body.data.totalReserved).toBe(5);
     expect(inv.body.data.totalAvailable).toBe(5);
 
@@ -91,7 +93,9 @@ describe('Reservation Expiry Sweeper API', () => {
 
     // After sweep: order 1 expired (-3 reserved), order 2 active (2 reserved)
     // totalReserved should now be 2, available should be 8!
-    inv = await request(app).get(`/api/v1/inventory?productId=${productId}`);
+    inv = await request(app)
+      .get(`/api/v1/inventory?productId=${productId}`)
+      .set('Authorization', `Bearer ${adminToken}`);
     expect(inv.body.data.totalReserved).toBe(2);
     expect(inv.body.data.totalAvailable).toBe(8);
 
@@ -118,7 +122,9 @@ describe('Reservation Expiry Sweeper API', () => {
     expect(repeatResult.expiredOrdersCount).toBe(0);
 
     // Stock levels remain consistent (2 reserved, 8 available)
-    const inv = await request(app).get(`/api/v1/inventory?productId=${productId}`);
+    const inv = await request(app)
+      .get(`/api/v1/inventory?productId=${productId}`)
+      .set('Authorization', `Bearer ${adminToken}`);
     expect(inv.body.data.totalReserved).toBe(2);
     expect(inv.body.data.totalAvailable).toBe(8);
   });

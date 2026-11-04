@@ -288,13 +288,14 @@ describe('StockFlow — Customer Shopping Experience & Security Audit', () => {
 
   // 9. Order placement when quantity exceeds available stock is rejected (409 Conflict)
   it('9. Order placement when quantity exceeds available stock is rejected with 409 Conflict', async () => {
-    // Warehouse has 20 units available; customer requests 50 units
+    // Warehouse has 20 units available; customer requests 50 units (explicitly refusing partial fulfillment)
     const res = await request(app)
       .post('/api/v1/orders')
       .set('Authorization', `Bearer ${customer1Token}`)
       .send({
         shippingAddress: '123 Test St, Boston, MA 02108',
         items: [{ productId: activeProduct1.id, quantity: 50 }],
+        allowPartial: false,
       });
 
     expect(res.status).toBe(409);

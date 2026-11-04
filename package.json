@@ -15,6 +15,7 @@
     "prisma:migrate": "prisma migrate dev",
     "test": "jest --runInBand --detectOpenHandles --forceExit",
     "admin:bootstrap": "tsx scripts/bootstrap-admin.ts",
+    "admin:create": "tsx scripts/create-admin.ts",
     "benchmark": "tsx scripts/benchmark.ts"
   },
   "dependencies": {

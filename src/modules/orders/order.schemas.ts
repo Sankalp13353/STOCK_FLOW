@@ -19,6 +19,7 @@ export const createOrderSchema = z.object({
   items: z
     .array(createOrderItemSchema)
     .min(1, 'Order must contain at least one item'),
+  allowPartial: z.boolean().optional(),
 });
 
 export const listOrdersQuerySchema = z.object({

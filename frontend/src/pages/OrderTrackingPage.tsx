@@ -10,6 +10,7 @@ import { ErrorMessage } from '../components/ui/ErrorMessage';
 import { Modal } from '../components/ui/Modal';
 import { fetchOrderById, cancelOrder } from '../api/orders';
 import { processPayment } from '../api/payments';
+import { fetchTickets, submitCustomerDecision } from '../api/tickets';
 import { useAuth } from '../hooks/useAuth';
 import { formatCurrencyCents, formatDate } from '../utils/formatters';
 import { OrderStatus } from '../types';
@@ -57,6 +58,45 @@ export function OrderTrackingPage() {
     enabled: Boolean(id),
     staleTime: 10 * 1000,
   });
+
+  const { data: ticketData, refetch: refetchTickets } = useQuery({
+    queryKey: ['order-decision-ticket', id],
+    queryFn: () => fetchTickets({ orderId: id, type: 'CUSTOMER_DECISION' }),
+    enabled: Boolean(id) && order?.status === 'PENDING',
+  });
+
+  const decisionTicket = ticketData?.tickets?.[0];
+  const [isSubmittingDecision, setIsSubmittingDecision] = useState(false);
+
+  async function handleCustomerDecisionAction(action: 'ACCEPT_PARTIAL' | 'REJECT_PARTIAL') {
+    if (!decisionTicket) return;
+    setIsSubmittingDecision(true);
+    setFeedback(null);
+    try {
+      await submitCustomerDecision(decisionTicket.id, action);
+      await refetch();
+      await refetchTickets();
+      queryClient.invalidateQueries({ queryKey: ['my-orders'] });
+      if (action === 'ACCEPT_PARTIAL') {
+        setFeedback({
+          type: 'success',
+          message: `You have accepted the partial order offer of ${decisionTicket.quantityOffered} units.`,
+        });
+      } else {
+        setFeedback({
+          type: 'info',
+          message: 'You have rejected the partial fulfillment offer. The order has been cancelled.',
+        });
+      }
+    } catch (err: any) {
+      setFeedback({
+        type: 'danger',
+        message: err.response?.data?.error?.message || err.message || 'Failed to submit decision',
+      });
+    } finally {
+      setIsSubmittingDecision(false);
+    }
+  }
 
   const getStatusBadgeVariant = (status: OrderStatus): BadgeVariant => {
     switch (status) {
@@ -182,7 +222,6 @@ export function OrderTrackingPage() {
     order.status === 'RESERVATION_EXPIRED';
 
   const isActionablePayment =
-    order.status === 'PENDING' ||
     order.status === 'RESERVED' ||
     order.status === 'PAYMENT_PENDING';
 
@@ -352,6 +391,89 @@ export function OrderTrackingPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Customer Shortage Decision Banner */}
+      {decisionTicket && (
+        <Card className="border-amber-300 bg-amber-50/40">
+          <CardHeader
+            title={
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-amber-600" />
+                <span>Partial Fulfillment Offer</span>
+              </div>
+            }
+            subtitle="Action Required: We have identified a stock constraint for this order."
+            action={
+              <Badge
+                variant={
+                  decisionTicket.customerDecision === 'ACCEPTED_PARTIAL'
+                    ? 'success'
+                    : decisionTicket.customerDecision === 'REJECTED'
+                    ? 'danger'
+                    : 'warning'
+                }
+              >
+                {decisionTicket.customerDecision?.replace('_', ' ') || 'PENDING DECISION'}
+              </Badge>
+            }
+          />
+          <CardContent className="space-y-4">
+            <div className="p-4 rounded-xl bg-white border border-amber-200 space-y-3">
+              <p className="text-xs text-slate-700 leading-relaxed">
+                You originally requested <strong className="text-slate-900">{decisionTicket.requestedQuantity} units</strong>. Due to limited inventory across our active warehouse network, we are able to immediately fulfill <strong className="text-emerald-700">{decisionTicket.quantityOffered} units</strong>.
+              </p>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                <div className="p-2 bg-slate-50 border border-slate-200 rounded-md text-center">
+                  <span className="text-[10px] text-slate-500 uppercase block font-semibold">Requested</span>
+                  <span className="text-base font-bold text-slate-800">{decisionTicket.requestedQuantity}</span>
+                </div>
+                <div className="p-2 bg-emerald-50 border border-emerald-200 rounded-md text-center">
+                  <span className="text-[10px] text-emerald-700 uppercase block font-semibold">Offered</span>
+                  <span className="text-base font-bold text-emerald-900">{decisionTicket.quantityOffered}</span>
+                </div>
+                <div className="p-2 bg-rose-50 border border-rose-200 rounded-md text-center">
+                  <span className="text-[10px] text-rose-700 uppercase block font-semibold">Shortage</span>
+                  <span className="text-base font-bold text-rose-800">{decisionTicket.shortageQuantity}</span>
+                </div>
+                <div className="p-2 bg-blue-50 border border-blue-200 rounded-md text-center">
+                  <span className="text-[10px] text-blue-700 uppercase block font-semibold">Decision Status</span>
+                  <span className="text-xs font-bold text-blue-900 capitalize block mt-1">
+                    {decisionTicket.customerDecision?.toLowerCase().replace('_', ' ') || 'Pending'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {decisionTicket.customerDecision === 'PENDING' && (
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  variant="primary"
+                  className="bg-emerald-600 hover:bg-emerald-700"
+                  onClick={() => handleCustomerDecisionAction('ACCEPT_PARTIAL')}
+                  isLoading={isSubmittingDecision}
+                >
+                  Accept Partial Order ({decisionTicket.quantityOffered} units)
+                </Button>
+                <Button
+                  variant="outline"
+                  className="text-rose-700 border-rose-300 hover:bg-rose-50"
+                  onClick={() => handleCustomerDecisionAction('REJECT_PARTIAL')}
+                  disabled={isSubmittingDecision}
+                >
+                  Reject & Cancel Order
+                </Button>
+              </div>
+            )}
+
+            {decisionTicket.customerDecision === 'ACCEPTED_PARTIAL' && order.status === 'PENDING' && (
+              <p className="text-xs text-amber-800 font-medium">
+                ⏳ Offer accepted! Awaiting final warehouse manager authorization to commit stock reservations.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Interactive Payment Simulation Box */}
       {isActionablePayment && (

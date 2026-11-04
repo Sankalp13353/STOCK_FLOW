@@ -37,5 +37,6 @@ export * from './products';
 export * from './warehouses';
 export * from './inventory';
 export * from './orders';
+export * from './ticket';
 
 

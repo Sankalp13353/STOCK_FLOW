@@ -11,6 +11,7 @@ import { CartPage } from '../pages/CartPage';
 import { CheckoutPage } from '../pages/CheckoutPage';
 import { MyOrdersPage } from '../pages/MyOrdersPage';
 import { OrderTrackingPage } from '../pages/OrderTrackingPage';
+import { TicketsPage } from '../pages/TicketsPage';
 import {
   InventoryPage,
   OrdersPage,
@@ -50,6 +51,7 @@ export function AppRoutes() {
           <Route path="/warehouses" element={<WarehousesPage />} />
           <Route path="/orders" element={<OrdersRoute />} />
           <Route path="/orders/:id" element={<OrderTrackingPage />} />
+          <Route path="/tickets" element={<TicketsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
       </Route>

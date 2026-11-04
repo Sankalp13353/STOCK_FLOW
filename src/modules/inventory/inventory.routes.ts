@@ -2,10 +2,14 @@ import { Router } from 'express';
 import { UserRole } from '@prisma/client';
 import { inventoryController } from './inventory.controller';
 import { validate } from '../../common/middlewares/validate';
-import { authenticate, authenticateOptional, authorize } from '../../common/middlewares/auth';
+import { authenticate, authorize } from '../../common/middlewares/auth';
 import {
   addStockSchema,
+  createThresholdSchema,
   inventoryQuerySchema,
+  thresholdIdParamSchema,
+  thresholdQuerySchema,
+  updateThresholdSchema,
   warehouseIdParamSchema,
 } from './inventory.schemas';
 
@@ -37,22 +41,81 @@ router.post(
   inventoryController.expireReservations
 );
 
-// Overview inventory queries
-router.get('/', authenticateOptional, validate({ query: inventoryQuerySchema }), inventoryController.getInventory);
+// Minimum Stock Thresholds Management APIs
+// Must be registered BEFORE /:warehouseId route to prevent routing collision
+router.get(
+  '/thresholds',
+  authenticate,
+  authorize(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF),
+  validate({ query: thresholdQuerySchema }),
+  inventoryController.getThresholds
+);
+
+router.post(
+  '/thresholds',
+  authenticate,
+  authorize(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER),
+  validate({ body: createThresholdSchema }),
+  inventoryController.createThreshold
+);
+
+router.get(
+  '/thresholds/:id',
+  authenticate,
+  authorize(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF),
+  validate({ params: thresholdIdParamSchema }),
+  inventoryController.getThresholdById
+);
+
+router.put(
+  '/thresholds/:id',
+  authenticate,
+  authorize(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER),
+  validate({ params: thresholdIdParamSchema, body: updateThresholdSchema }),
+  inventoryController.updateThreshold
+);
+
+router.delete(
+  '/thresholds/:id',
+  authenticate,
+  authorize(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER),
+  validate({ params: thresholdIdParamSchema }),
+  inventoryController.deleteThreshold
+);
+
+// Low-stock evaluation query across authorized facilities
+router.get(
+  '/low-stock',
+  authenticate,
+  authorize(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF),
+  inventoryController.getLowStock
+);
+
+// Overview inventory queries (Strictly authenticated & authorized for internal operations)
+router.get(
+  '/',
+  authenticate,
+  authorize(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF),
+  validate({ query: inventoryQuerySchema }),
+  inventoryController.getInventory
+);
 
 // Warehouse-specific inventory (Phase 1 spec: /warehouse/:warehouseId, Phase 2 prompt: /:warehouseId)
 router.get(
   '/warehouse/:warehouseId',
-  authenticateOptional,
+  authenticate,
+  authorize(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF),
   validate({ params: warehouseIdParamSchema }),
   inventoryController.getByWarehouse
 );
 
 router.get(
   '/:warehouseId',
-  authenticateOptional,
+  authenticate,
+  authorize(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF),
   validate({ params: warehouseIdParamSchema }),
   inventoryController.getByWarehouse
 );
 
 export const inventoryRouter = router;
+

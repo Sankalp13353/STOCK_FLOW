@@ -6,6 +6,8 @@ import { inventoryRouter } from './modules/inventory/inventory.routes';
 import { orderRouter } from './modules/orders/order.routes';
 import { paymentRouter } from './modules/payments/payment.routes';
 import { userRouter } from './modules/users/user.routes';
+import { ticketRouter } from './modules/tickets/ticket.routes';
+import { notificationRouter } from './modules/notifications/notification.routes';
 
 const rootRouter = Router();
 
@@ -16,5 +18,7 @@ rootRouter.use('/warehouses', warehouseRouter);
 rootRouter.use('/inventory', inventoryRouter);
 rootRouter.use('/orders', orderRouter);
 rootRouter.use('/payments', paymentRouter);
+rootRouter.use('/tickets', ticketRouter);
+rootRouter.use('/notifications', notificationRouter);
 
 export { rootRouter };

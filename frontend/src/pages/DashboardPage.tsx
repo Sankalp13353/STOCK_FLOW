@@ -29,6 +29,7 @@ import { WarehouseSelector } from '../features/dashboard/WarehouseSelector';
 import { SelectedWarehouseOverview } from '../features/dashboard/SelectedWarehouseOverview';
 import { MultiWarehouseOverview } from '../features/dashboard/MultiWarehouseOverview';
 import { RestockModal } from '../features/inventory/RestockModal';
+import { ThresholdManagementModal } from '../features/inventory/ThresholdManagementModal';
 import { RecentOrdersList } from '../features/dashboard/RecentOrdersList';
 import { StatCard } from '../features/dashboard/StatCard';
 import { Warehouse, RestockResult } from '../types';
@@ -45,6 +46,7 @@ export function DashboardPage() {
   // State for active warehouse selection
   const [selectedWarehouseId, setSelectedWarehouseId] = useState<string | null>(null);
   const [isRestockOpen, setIsRestockOpen] = useState(false);
+  const [isThresholdModalOpen, setIsThresholdModalOpen] = useState(false);
   const [isExpiringReservations, setIsExpiringReservations] = useState(false);
   const [notification, setNotification] = useState<{
     type: 'success' | 'warning' | 'info';
@@ -476,6 +478,7 @@ export function DashboardPage() {
               onOpenRestock={() => setIsRestockOpen(true)}
               onExpireReservations={handleExpireReservations}
               isExpiringReservations={isExpiringReservations}
+              onOpenThresholds={() => setIsThresholdModalOpen(true)}
             />
           )}
 
@@ -506,6 +509,13 @@ export function DashboardPage() {
           onSuccess={handleRestockSuccess}
         />
       )}
+
+      {/* Threshold Management Modal */}
+      <ThresholdManagementModal
+        isOpen={isThresholdModalOpen}
+        onClose={() => setIsThresholdModalOpen(false)}
+        onSuccessToast={(msg) => showToast(msg, 'success')}
+      />
     </div>
   );
 }

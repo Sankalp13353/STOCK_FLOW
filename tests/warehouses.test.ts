@@ -119,7 +119,9 @@ describe('Warehouse Management API', () => {
     });
 
     it('should retrieve list of all warehouses', async () => {
-      const res = await request(app).get('/api/v1/warehouses');
+      const res = await request(app)
+        .get('/api/v1/warehouses')
+        .set('Authorization', `Bearer ${adminToken}`);
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
@@ -128,7 +130,9 @@ describe('Warehouse Management API', () => {
     });
 
     it('should retrieve single warehouse by ID with HTTP 200', async () => {
-      const res = await request(app).get(`/api/v1/warehouses/${createdWarehouseId}`);
+      const res = await request(app)
+        .get(`/api/v1/warehouses/${createdWarehouseId}`)
+        .set('Authorization', `Bearer ${adminToken}`);
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
@@ -138,7 +142,9 @@ describe('Warehouse Management API', () => {
 
     it('should return HTTP 404 when warehouse ID does not exist', async () => {
       const nonExistentUuid = 'b0000000-0000-0000-0000-000000000000';
-      const res = await request(app).get(`/api/v1/warehouses/${nonExistentUuid}`);
+      const res = await request(app)
+        .get(`/api/v1/warehouses/${nonExistentUuid}`)
+        .set('Authorization', `Bearer ${adminToken}`);
 
       expect(res.status).toBe(404);
       expect(res.body.success).toBe(false);

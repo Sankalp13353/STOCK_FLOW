@@ -77,7 +77,9 @@ describe('Idempotency Control API', () => {
     expect(secondRes.body.data.id).toBe(firstOrderId);
 
     // Verify stock was held only ONCE (2 units, not 4 units)
-    const invRes = await request(app).get(`/api/v1/inventory?productId=${productId}`);
+    const invRes = await request(app)
+      .get(`/api/v1/inventory?productId=${productId}`)
+      .set('Authorization', `Bearer ${adminToken}`);
     expect(invRes.body.data.totalReserved).toBe(2);
     expect(invRes.body.data.totalAvailable).toBe(8);
   });
@@ -141,7 +143,9 @@ describe('Idempotency Control API', () => {
     expect(orderIds.size).toBe(1);
 
     // Verify only 1 unit of stock reserved
-    const invRes = await request(app).get(`/api/v1/inventory?productId=${productId}`);
+    const invRes = await request(app)
+      .get(`/api/v1/inventory?productId=${productId}`)
+      .set('Authorization', `Bearer ${adminToken}`);
     expect(invRes.body.data.totalReserved).toBe(1);
     expect(invRes.body.data.totalAvailable).toBe(9);
   });

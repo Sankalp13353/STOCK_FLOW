@@ -38,16 +38,21 @@ export class WarehouseService {
       throw new NotFoundError(`Warehouse with ID '${id}' not found`);
     }
 
-    if (user) {
-      if (user.role === UserRole.CUSTOMER) {
-        throw new ForbiddenError(
-          'Access denied. Customers are not authorized to access internal warehouse operations.',
-          'FORBIDDEN'
-        );
-      }
-      if (user.role === UserRole.WAREHOUSE_MANAGER || user.role === UserRole.WAREHOUSE_STAFF) {
-        await warehouseAccessService.ensureWarehouseAccess(user.userId, user.role, id);
-      }
+    if (!user) {
+      throw new ForbiddenError(
+        'Authentication required to access warehouse operations.',
+        'AUTH_REQUIRED'
+      );
+    }
+
+    if (user.role === UserRole.CUSTOMER) {
+      throw new ForbiddenError(
+        'Access denied. Customers are not authorized to access internal warehouse operations.',
+        'FORBIDDEN'
+      );
+    }
+    if (user.role === UserRole.WAREHOUSE_MANAGER || user.role === UserRole.WAREHOUSE_STAFF) {
+      await warehouseAccessService.ensureWarehouseAccess(user.userId, user.role, id);
     }
 
     return warehouse;
@@ -63,20 +68,25 @@ export class WarehouseService {
       where.isActive = query.isActive;
     }
 
-    if (user) {
-      if (user.role === UserRole.CUSTOMER) {
-        throw new ForbiddenError(
-          'Access denied. Customers are not authorized to access internal warehouse operations.',
-          'FORBIDDEN'
-        );
-      }
-      if (user.role === UserRole.WAREHOUSE_MANAGER || user.role === UserRole.WAREHOUSE_STAFF) {
-        const accessibleIds = await warehouseAccessService.getAccessibleWarehouseIds(
-          user.userId,
-          user.role
-        );
-        where.id = { in: accessibleIds as string[] };
-      }
+    if (!user) {
+      throw new ForbiddenError(
+        'Authentication required to list warehouse facilities.',
+        'AUTH_REQUIRED'
+      );
+    }
+
+    if (user.role === UserRole.CUSTOMER) {
+      throw new ForbiddenError(
+        'Access denied. Customers are not authorized to access internal warehouse operations.',
+        'FORBIDDEN'
+      );
+    }
+    if (user.role === UserRole.WAREHOUSE_MANAGER || user.role === UserRole.WAREHOUSE_STAFF) {
+      const accessibleIds = await warehouseAccessService.getAccessibleWarehouseIds(
+        user.userId,
+        user.role
+      );
+      where.id = { in: accessibleIds as string[] };
     }
 
     return prisma.warehouse.findMany({

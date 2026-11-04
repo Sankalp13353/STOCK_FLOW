@@ -11,6 +11,7 @@ import {
   LogOut,
   X,
   Layers,
+  Ticket,
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { Badge } from '../ui/Badge';
@@ -26,6 +27,7 @@ const NAV_ITEMS = [
   { name: 'Inventory', path: '/inventory', icon: Boxes },
   { name: 'Warehouses', path: '/warehouses', icon: Warehouse },
   { name: 'Orders', path: '/orders', icon: ShoppingCart },
+  { name: 'Tickets', path: '/tickets', icon: Ticket },
   { name: 'Settings', path: '/settings', icon: Settings },
 ];
 

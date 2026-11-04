@@ -1,8 +1,10 @@
 import { useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Warehouse, WarehouseInventoryItem } from '../../types';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { formatNumber } from '../../utils/formatters';
+import { fetchThresholds } from '../../api/inventory';
 import {
   Warehouse as WarehouseIcon,
   CheckCircle2,
@@ -36,6 +38,13 @@ export function MultiWarehouseOverview({
   selectedWarehouseId,
   onSelectWarehouse,
 }: MultiWarehouseOverviewProps) {
+  // Fetch configured thresholds to determine actual low-stock status
+  const { data: thresholds = [] } = useQuery({
+    queryKey: ['thresholds'],
+    queryFn: () => fetchThresholds(),
+    staleTime: 30 * 1000,
+  });
+
   // Aggregate inventory by warehouseId
   const warehouseAggregates = useMemo<WarehouseAggregate[]>(() => {
     const invByWh = new Map<string, WarehouseInventoryItem[]>();
@@ -47,12 +56,28 @@ export function MultiWarehouseOverview({
       invByWh.get(whId)!.push(item);
     }
 
+    // Index thresholds by warehouse-override and global default
+    const whThresholdMap = new Map<string, number>();
+    const globalThresholdMap = new Map<string, number>();
+    for (const t of thresholds) {
+      if (t.warehouseId) {
+        whThresholdMap.set(`${t.productId}:${t.warehouseId}`, t.minQuantity);
+      } else {
+        globalThresholdMap.set(t.productId, t.minQuantity);
+      }
+    }
+
     return warehouses.map((wh) => {
       const items = invByWh.get(wh.id) || [];
       const totalOnHand = items.reduce((sum, i) => sum + (i.quantityOnHand || 0), 0);
       const totalReserved = items.reduce((sum, i) => sum + (i.quantityReserved || 0), 0);
       const totalAvailable = items.reduce((sum, i) => sum + (i.quantityAvailable || 0), 0);
-      const lowStockCount = items.filter((i) => i.quantityAvailable > 0 && i.quantityAvailable <= 20).length;
+
+      const lowStockCount = items.filter((i) => {
+        if (i.quantityAvailable <= 0) return false;
+        const th = whThresholdMap.get(`${i.productId}:${wh.id}`) ?? globalThresholdMap.get(i.productId);
+        return th !== undefined ? i.quantityAvailable < th : false;
+      }).length;
       const outOfStockCount = items.filter((i) => i.quantityAvailable <= 0).length;
 
       return {
@@ -65,7 +90,7 @@ export function MultiWarehouseOverview({
         outOfStockCount,
       };
     });
-  }, [warehouses, allInventory]);
+  }, [warehouses, allInventory, thresholds]);
 
   // Overall multi-facility totals
   const overallTotals = useMemo(() => {

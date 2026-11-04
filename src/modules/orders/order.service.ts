@@ -6,6 +6,7 @@ import { hashPayload } from '../../common/utils/crypto';
 import { CancelOrderInput, CreateOrderInput, ListOrdersQuery } from './order.schemas';
 import { outboxService } from '../outbox/outbox.service';
 import { warehouseAccessService } from '../warehouses/warehouse-access.service';
+import { thresholdEvaluationService } from '../inventory/threshold-evaluation.service';
 
 export interface OrderCreationResult {
   order: Order & {
@@ -91,8 +92,8 @@ export class OrderService {
 
     // 3. Execute Concurrency-Controlled Atomic Transaction
     try {
-      return await prisma.$transaction(async (tx) => {
-        // Step A: Resolve target inventory row for each item
+      const txResult = await prisma.$transaction(async (tx) => {
+        // Step A: Inspect inventory and determine allocation across eligible warehouses
         const resolvedItems: Array<{
           productId: string;
           warehouseId: string;
@@ -102,10 +103,25 @@ export class OrderService {
           subtotalCents: number;
         }> = [];
 
+        const shortageItems: Array<{
+          productId: string;
+          productName: string;
+          productSku: string;
+          requestedQuantity: number;
+          availableQuantity: number;
+          shortageQuantity: number;
+          quantityOffered: number;
+          allocations: Array<{
+            warehouseId: string;
+            warehouseCode: string;
+            warehouseName: string;
+            quantity: number;
+          }>;
+          unitPriceCents: number;
+        }> = [];
+
         for (const item of items) {
           const prod = productMap.get(item.productId)!;
-          let targetInventoryId: string;
-          let targetWarehouseId: string;
 
           if (item.warehouseId) {
             // Specific warehouse requested
@@ -131,11 +147,45 @@ export class OrderService {
               );
             }
 
-            targetInventoryId = inv.id;
-            targetWarehouseId = item.warehouseId;
+            const available = inv.quantityOnHand - inv.quantityReserved;
+            if (available >= item.quantity) {
+              resolvedItems.push({
+                productId: item.productId,
+                warehouseId: item.warehouseId,
+                quantity: item.quantity,
+                inventoryId: inv.id,
+                unitPriceCents: prod.priceCents,
+                subtotalCents: prod.priceCents * item.quantity,
+              });
+            } else {
+              // Stock is less than requested at this specific warehouse
+              if (available <= 0 || input.allowPartial === false) {
+                throw new ConflictError(
+                  `Insufficient stock available for '${prod.name}' (SKU: ${prod.sku}). Required: ${item.quantity}, Available: ${available}`
+                );
+              }
+
+              shortageItems.push({
+                productId: item.productId,
+                productName: prod.name,
+                productSku: prod.sku,
+                requestedQuantity: item.quantity,
+                availableQuantity: available,
+                shortageQuantity: item.quantity - available,
+                quantityOffered: available,
+                allocations: [
+                  {
+                    warehouseId: item.warehouseId,
+                    warehouseCode: warehouse.code,
+                    warehouseName: warehouse.name,
+                    quantity: available,
+                  },
+                ],
+                unitPriceCents: prod.priceCents,
+              });
+            }
           } else {
-            // Deterministic Allocation Policy:
-            // Pick the first active warehouse with sufficient stock (on_hand - reserved >= quantity), sorted by warehouse code ASC.
+            // Deterministic Allocation Policy across active warehouses sorted by code ASC
             const candidateInventories = await tx.inventory.findMany({
               where: {
                 productId: item.productId,
@@ -145,31 +195,182 @@ export class OrderService {
               orderBy: { warehouse: { code: 'asc' } },
             });
 
-            const match = candidateInventories.find(
+            // 1. Try single warehouse allocation
+            const singleMatch = candidateInventories.find(
               (inv) => inv.quantityOnHand - inv.quantityReserved >= item.quantity
             );
 
-            if (!match) {
-              throw new ConflictError(
-                `Insufficient stock available across warehouses for product '${prod.name}' (SKU: ${prod.sku}). Requested: ${item.quantity}.`
+            if (singleMatch) {
+              resolvedItems.push({
+                productId: item.productId,
+                warehouseId: singleMatch.warehouseId,
+                quantity: item.quantity,
+                inventoryId: singleMatch.id,
+                unitPriceCents: prod.priceCents,
+                subtotalCents: prod.priceCents * item.quantity,
+              });
+            } else {
+              // 2. Check aggregate available stock across all active warehouses
+              const totalAvailable = candidateInventories.reduce(
+                (sum, inv) => sum + Math.max(0, inv.quantityOnHand - inv.quantityReserved),
+                0
               );
+
+              if (totalAvailable >= item.quantity) {
+                // Split order across warehouses to fulfill 100% of requested quantity
+                let remaining = item.quantity;
+                for (const inv of candidateInventories) {
+                  const avail = Math.max(0, inv.quantityOnHand - inv.quantityReserved);
+                  if (avail <= 0) continue;
+                  const allocQty = Math.min(remaining, avail);
+                  resolvedItems.push({
+                    productId: item.productId,
+                    warehouseId: inv.warehouseId,
+                    quantity: allocQty,
+                    inventoryId: inv.id,
+                    unitPriceCents: prod.priceCents,
+                    subtotalCents: prod.priceCents * allocQty,
+                  });
+                  remaining -= allocQty;
+                  if (remaining === 0) break;
+                }
+              } else {
+                // Total available < requested: Shortage detected!
+                if (totalAvailable <= 0 || input.allowPartial === false) {
+                  throw new ConflictError(
+                    `Insufficient stock available across warehouses for product '${prod.name}' (SKU: ${prod.sku}). Requested: ${item.quantity}.`
+                  );
+                }
+
+                const allocations: Array<{
+                  warehouseId: string;
+                  warehouseCode: string;
+                  warehouseName: string;
+                  quantity: number;
+                }> = [];
+
+                for (const inv of candidateInventories) {
+                  const avail = Math.max(0, inv.quantityOnHand - inv.quantityReserved);
+                  if (avail <= 0) continue;
+                  allocations.push({
+                    warehouseId: inv.warehouseId,
+                    warehouseCode: inv.warehouse.code,
+                    warehouseName: inv.warehouse.name,
+                    quantity: avail,
+                  });
+                }
+
+                shortageItems.push({
+                  productId: item.productId,
+                  productName: prod.name,
+                  productSku: prod.sku,
+                  requestedQuantity: item.quantity,
+                  availableQuantity: totalAvailable,
+                  shortageQuantity: item.quantity - totalAvailable,
+                  quantityOffered: totalAvailable,
+                  allocations,
+                  unitPriceCents: prod.priceCents,
+                });
+              }
             }
-
-            targetInventoryId = match.id;
-            targetWarehouseId = match.warehouseId;
           }
-
-          resolvedItems.push({
-            productId: item.productId,
-            warehouseId: targetWarehouseId,
-            quantity: item.quantity,
-            inventoryId: targetInventoryId,
-            unitPriceCents: prod.priceCents,
-            subtotalCents: prod.priceCents * item.quantity,
-          });
         }
 
-        // Step B: Deadlock Prevention — Sort inventory IDs deterministically before acquiring locks
+        // Step B: Shortage Workflow (Scenario B)
+        if (shortageItems.length > 0) {
+          const totalRequestedAmountCents = items.reduce((sum, item) => {
+            const prod = productMap.get(item.productId)!;
+            return sum + prod.priceCents * item.quantity;
+          }, 0);
+
+          const orderNumber = `ORD-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+          // Create order in PENDING status (awaiting customer decision and internal approval)
+          const order = await tx.order.create({
+            data: {
+              orderNumber,
+              userId,
+              status: OrderStatus.PENDING,
+              totalAmountCents: totalRequestedAmountCents,
+              shippingAddress,
+              idempotencyKey: idempotencyKey || null,
+            },
+          });
+
+          // Create initial order items
+          const defaultWh = await tx.warehouse.findFirst({ where: { isActive: true }, orderBy: { code: 'asc' } });
+          const createdItems = [];
+          for (const item of items) {
+            const prod = productMap.get(item.productId)!;
+            const targetWhId =
+              item.warehouseId ||
+              shortageItems.find((s) => s.productId === item.productId)?.allocations[0]?.warehouseId ||
+              defaultWh!.id;
+
+            const orderItem = await tx.orderItem.create({
+              data: {
+                orderId: order.id,
+                productId: item.productId,
+                warehouseId: targetWhId,
+                quantity: item.quantity,
+                unitPriceCents: prod.priceCents,
+                subtotalCents: prod.priceCents * item.quantity,
+              },
+            });
+            createdItems.push(orderItem);
+          }
+
+          // Create linked ORDER_SHORTAGE and CUSTOMER_DECISION tickets
+          const { ticketService } = await import('../tickets/ticket.service');
+          const createdTickets = [];
+          for (const s of shortageItems) {
+            const t = await ticketService.createShortageTickets(
+              {
+                orderId: order.id,
+                orderNumber: order.orderNumber,
+                customerId: userId,
+                productId: s.productId,
+                requestedQuantity: s.requestedQuantity,
+                availableQuantity: s.availableQuantity,
+                shortageQuantity: s.shortageQuantity,
+                quantityOffered: s.quantityOffered,
+                allocations: s.allocations,
+                productName: s.productName,
+                productSku: s.productSku,
+              },
+              tx
+            );
+            createdTickets.push(t);
+          }
+
+          const responsePayload = {
+            ...order,
+            items: createdItems,
+            reservations: [],
+            isShortage: true,
+            shortages: shortageItems,
+            tickets: createdTickets,
+          };
+
+          if (idempotencyKey) {
+            await tx.idempotencyRecord.create({
+              data: {
+                key: idempotencyKey,
+                requestPath: '/api/v1/orders',
+                requestPayloadHash: payloadHash,
+                responseStatus: 201,
+                responseBody: responsePayload as any,
+              },
+            });
+          }
+
+          return {
+            order: responsePayload as any,
+            isIdempotentReplay: false,
+          };
+        }
+
+        // Step C: Deadlock Prevention — Sort inventory IDs deterministically before acquiring locks
         const uniqueInventoryIds = Array.from(new Set(resolvedItems.map((r) => r.inventoryId))).sort();
 
         // Step C: Pessimistic Row-Level Locking (SELECT ... FOR UPDATE)
@@ -325,6 +526,21 @@ export class OrderService {
           isIdempotentReplay: false,
         };
       });
+
+      // Post-transaction threshold evaluation (runs after tx releases its connection to avoid pool starvation)
+      if (!txResult.isIdempotentReplay && txResult.order?.items) {
+        for (const item of txResult.order.items) {
+          if (item.productId && item.warehouseId) {
+            try {
+              await thresholdEvaluationService.evaluateStockAfterChange(item.productId, item.warehouseId);
+            } catch (evalErr) {
+              console.warn('⚠️ [OrderService] Threshold evaluation error:', evalErr);
+            }
+          }
+        }
+      }
+
+      return txResult;
     } catch (error) {
       // Handle concurrent race on the same idempotency key
       if (
@@ -635,12 +851,215 @@ export class OrderService {
         },
       });
 
+      // Evaluate stock after reservation release / restock
+      for (const item of order.orderItems) {
+        await thresholdEvaluationService.evaluateStockAfterChange(item.productId, item.warehouseId);
+      }
+
       return {
         orderId: updatedOrder.id,
         orderNumber: updatedOrder.orderNumber,
         status: updatedOrder.status,
         message: 'Order cancelled successfully.',
         compensation: { stockReleased },
+      };
+    });
+  }
+
+  /**
+   * Finalizes an order that had a shortage once BOTH manager approval and customer decision have been obtained.
+   * Atomically verifies fresh inventory availability, acquires canonical row locks, commits reservations for the accepted
+   * quantity, updates order line items and total amount, and transitions order status to RESERVED.
+   */
+  public async finalizeShortageOrderReservation(orderId: string) {
+    return await prisma.$transaction(async (tx) => {
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        include: { orderItems: true },
+      });
+
+      if (!order) {
+        throw new NotFoundError(`Order with ID '${orderId}' not found`);
+      }
+
+      if (order.status !== OrderStatus.PENDING) {
+        // Already reserved or finalized
+        return order;
+      }
+
+      // Find the linked ORDER_SHORTAGE ticket
+      const shortageTicket = await tx.ticket.findFirst({
+        where: { orderId, type: 'ORDER_SHORTAGE' as any },
+      });
+
+      if (!shortageTicket) {
+        throw new NotFoundError(`Shortage ticket for order '${orderId}' not found`);
+      }
+
+      const allocations: Array<{
+        warehouseId: string;
+        warehouseCode: string;
+        warehouseName: string;
+        quantity: number;
+      }> = (shortageTicket.metadata as any)?.allocations || [];
+
+      if (allocations.length === 0) {
+        throw new BadRequestError('No warehouse allocations found for shortage order');
+      }
+
+      const productId = shortageTicket.productId!;
+      const prod = await tx.product.findUnique({ where: { id: productId } });
+      if (!prod) {
+        throw new NotFoundError(`Product '${productId}' not found`);
+      }
+
+      // Step A: Fetch inventory IDs for all allocated warehouses
+      const warehouseIds = allocations.map((a) => a.warehouseId);
+      const inventories = await tx.inventory.findMany({
+        where: {
+          productId,
+          warehouseId: { in: warehouseIds },
+        },
+      });
+
+      const invMap = new Map(inventories.map((i) => [i.warehouseId, i]));
+      const inventoryIds = inventories.map((i) => i.id).sort();
+
+      // Step B: Canonical Row-Level Locking (SELECT ... FOR UPDATE)
+      const lockedRows: Array<{
+        id: string;
+        product_id: string;
+        warehouse_id: string;
+        quantity_on_hand: number;
+        quantity_reserved: number;
+      }> = await tx.$queryRaw`
+        SELECT id, product_id, warehouse_id, quantity_on_hand, quantity_reserved
+        FROM inventory
+        WHERE id = ANY(${inventoryIds}::uuid[])
+        ORDER BY id ASC
+        FOR UPDATE
+      `;
+
+      const lockedMap = new Map(lockedRows.map((r) => [r.id, r]));
+
+      // Step C: Recheck available stock under lock (Ensure no stale availability)
+      for (const alloc of allocations) {
+        const inv = invMap.get(alloc.warehouseId);
+        if (!inv) {
+          throw new ConflictError(`Inventory record missing for warehouse '${alloc.warehouseId}'`);
+        }
+        const locked = lockedMap.get(inv.id);
+        if (!locked) {
+          throw new ConflictError('Failed to lock inventory record');
+        }
+        const available = locked.quantity_on_hand - locked.quantity_reserved;
+        if (available < alloc.quantity) {
+          throw new ConflictError(
+            `Inventory availability changed before reservation could be committed for warehouse '${alloc.warehouseCode || alloc.warehouseId}'. Stale stock detected. Available: ${available}, Required: ${alloc.quantity}`
+          );
+        }
+      }
+
+      // Step D: Delete previous placeholder order items and insert accepted items
+      await tx.orderItem.deleteMany({ where: { orderId } });
+
+      const expiresAt = new Date(Date.now() + APP_CONSTANTS.DEFAULT_RESERVATION_TTL_MINUTES * 60 * 1000);
+      const newItems = [];
+      const newReservations = [];
+
+      let totalAcceptedAmountCents = 0;
+
+      for (const alloc of allocations) {
+        const inv = invMap.get(alloc.warehouseId)!;
+        const subtotal = prod.priceCents * alloc.quantity;
+        totalAcceptedAmountCents += subtotal;
+
+        // 1. Create order item
+        const orderItem = await tx.orderItem.create({
+          data: {
+            orderId: order.id,
+            productId,
+            warehouseId: alloc.warehouseId,
+            quantity: alloc.quantity,
+            unitPriceCents: prod.priceCents,
+            subtotalCents: subtotal,
+          },
+        });
+        newItems.push(orderItem);
+
+        // 2. Increment quantityReserved
+        await tx.inventory.update({
+          where: { id: inv.id },
+          data: {
+            quantityReserved: { increment: alloc.quantity },
+          },
+        });
+
+        // 3. Create active reservation
+        const reservation = await tx.inventoryReservation.create({
+          data: {
+            orderId: order.id,
+            inventoryId: inv.id,
+            quantity: alloc.quantity,
+            status: ReservationStatus.ACTIVE,
+            expiresAt,
+          },
+        });
+        newReservations.push(reservation);
+
+        // 4. Record audit ledger entry
+        await tx.inventoryMovement.create({
+          data: {
+            productId,
+            warehouseId: alloc.warehouseId,
+            quantityDelta: alloc.quantity,
+            movementType: MovementType.RESERVATION_HOLD,
+            referenceId: order.id,
+            notes: `Held ${alloc.quantity} unit(s) for accepted partial order '${order.orderNumber}'. Reservation TTL: ${APP_CONSTANTS.DEFAULT_RESERVATION_TTL_MINUTES}m.`,
+          },
+        });
+      }
+
+      // Step E: Update order status to RESERVED and update totalAmountCents to accepted total
+      const updatedOrder = await tx.order.update({
+        where: { id: orderId },
+        data: {
+          status: OrderStatus.RESERVED,
+          totalAmountCents: totalAcceptedAmountCents,
+        },
+      });
+
+      // Step F: Record Outbox Event
+      await outboxService.recordEvent(tx, {
+        aggregateType: 'Order',
+        aggregateId: order.id,
+        eventType: EVENT_TYPES.ORDER_CREATED,
+        payload: {
+          orderId: order.id,
+          orderNumber: order.orderNumber,
+          userId: order.userId,
+          totalAmountCents: totalAcceptedAmountCents,
+          shippingAddress: order.shippingAddress,
+          items: newItems.map((item) => ({
+            productId: item.productId,
+            warehouseId: item.warehouseId,
+            quantity: item.quantity,
+            unitPriceCents: item.unitPriceCents,
+            subtotalCents: item.subtotalCents,
+          })),
+          createdAt: order.createdAt.toISOString(),
+        },
+      });
+
+      // Step G: Evaluate stock against configured thresholds for affected warehouses
+      for (const alloc of allocations) {
+        await thresholdEvaluationService.evaluateStockAfterChange(productId, alloc.warehouseId);
+      }
+
+      return {
+        ...updatedOrder,
+        items: newItems,
+        reservations: newReservations,
       };
     });
   }

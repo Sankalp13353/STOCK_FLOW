@@ -61,7 +61,9 @@ describe('Payment Simulation & Stock Settlement API', () => {
 
   it('should process payment SUCCESS, transition order to CONFIRMED, and permanently commit stock', async () => {
     // Before payment: on_hand = 10, reserved = 2, available = 8
-    let inv = await request(app).get(`/api/v1/inventory?productId=${productId}`);
+    let inv = await request(app)
+      .get(`/api/v1/inventory?productId=${productId}`)
+      .set('Authorization', `Bearer ${adminToken}`);
     expect(inv.body.data.totalOnHand).toBe(10);
     expect(inv.body.data.totalReserved).toBe(2);
     expect(inv.body.data.totalAvailable).toBe(8);
@@ -83,7 +85,9 @@ describe('Payment Simulation & Stock Settlement API', () => {
     expect(res.body.data.payment.status).toBe('SUCCESS');
 
     // After payment committed: on_hand = 8, reserved = 0, available = 8
-    inv = await request(app).get(`/api/v1/inventory?productId=${productId}`);
+    inv = await request(app)
+      .get(`/api/v1/inventory?productId=${productId}`)
+      .set('Authorization', `Bearer ${adminToken}`);
     expect(inv.body.data.totalOnHand).toBe(8);
     expect(inv.body.data.totalReserved).toBe(0);
     expect(inv.body.data.totalAvailable).toBe(8);
@@ -113,7 +117,9 @@ describe('Payment Simulation & Stock Settlement API', () => {
     expect(res.body.data.payment.status).toBe('FAILED');
 
     // Stock after release: on_hand = 10, reserved = 0, available = 10
-    const inv = await request(app).get(`/api/v1/inventory?productId=${productId}`);
+    const inv = await request(app)
+      .get(`/api/v1/inventory?productId=${productId}`)
+      .set('Authorization', `Bearer ${adminToken}`);
     expect(inv.body.data.totalOnHand).toBe(10);
     expect(inv.body.data.totalReserved).toBe(0);
     expect(inv.body.data.totalAvailable).toBe(10);

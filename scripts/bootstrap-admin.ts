@@ -3,6 +3,7 @@ import bcrypt from 'bcrypt';
 import { UserRole } from '@prisma/client';
 import { prisma } from '../src/database/prisma';
 import { APP_CONSTANTS } from '../src/config/constants';
+import { promptText, promptPassword, isValidEmail, isValidPassword } from './prompt-utils';
 
 export interface BootstrapResult {
   success: boolean;
@@ -11,40 +12,20 @@ export interface BootstrapResult {
   adminEmail?: string;
 }
 
-export async function bootstrapInitialAdmin(): Promise<BootstrapResult> {
-  const adminName = process.env.ADMIN_NAME?.trim();
-  const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
-  const adminPassword = process.env.ADMIN_PASSWORD;
+export interface BootstrapOptions {
+  name?: string;
+  email?: string;
+  password?: string;
+  interactive?: boolean;
+}
 
+export async function bootstrapInitialAdmin(options?: BootstrapOptions): Promise<BootstrapResult> {
   console.log('====================================================');
   console.log('StockFlow — Initial Administrator Account Bootstrap');
   console.log('====================================================');
 
-  if (!adminName || !adminEmail || !adminPassword) {
-    const errorMsg =
-      'Missing required environment variables: ADMIN_NAME, ADMIN_EMAIL, and ADMIN_PASSWORD must all be defined.';
-    console.error(`❌ [Bootstrap Error] ${errorMsg}`);
-    console.error('Example: ADMIN_NAME="System Admin" ADMIN_EMAIL="admin@stockflow.dev" ADMIN_PASSWORD="SecurePassword123!" npm run admin:bootstrap');
-    return { success: false, message: errorMsg };
-  }
-
-  // 1. Validate email format
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!emailRegex.test(adminEmail)) {
-    const errorMsg = `Invalid email address format: '${adminEmail}'`;
-    console.error(`❌ [Bootstrap Error] ${errorMsg}`);
-    return { success: false, message: errorMsg };
-  }
-
-  // 2. Validate password length
-  if (adminPassword.length < 8) {
-    const errorMsg = 'ADMIN_PASSWORD must be at least 8 characters long.';
-    console.error(`❌ [Bootstrap Error] ${errorMsg}`);
-    return { success: false, message: errorMsg };
-  }
-
-  // 3. Safety Check: Enforce single initial administrator creation.
-  // If an administrator already exists, do not silently create another one.
+  // 1. Safety Check: Enforce single initial administrator creation.
+  // If an administrator already exists, abort immediately before prompting or hashing.
   const existingAdmin = await prisma.user.findFirst({
     where: { role: UserRole.ADMIN },
     select: { id: true, email: true, createdAt: true },
@@ -53,11 +34,69 @@ export async function bootstrapInitialAdmin(): Promise<BootstrapResult> {
   if (existingAdmin) {
     const warnMsg = `An administrator account already exists (${existingAdmin.email}, ID: ${existingAdmin.id}). For system security, initial bootstrap can only provision the primary administrator.`;
     console.warn(`⚠️  [Safety Notice] ${warnMsg}`);
-    console.warn('To manage users or assign additional administrators, sign in with an existing administrator account.');
+    console.warn('To provision additional administrators, use: npm run admin:create');
     return { success: false, message: warnMsg };
   }
 
-  // 4. Safety Check: If email is already taken by a non-admin account, fail safely without changing role or credentials.
+  // 2. Resolve credentials from options, environment variables, or interactive prompt
+  let adminName = options?.name?.trim() || process.env.ADMIN_NAME?.trim();
+  let adminEmail = options?.email?.trim().toLowerCase() || process.env.ADMIN_EMAIL?.trim().toLowerCase();
+  let adminPassword = options?.password || process.env.ADMIN_PASSWORD;
+
+  const canPrompt = options?.interactive !== false && Boolean(process.stdin.isTTY);
+
+  if ((!adminName || !adminEmail || !adminPassword) && canPrompt) {
+    console.log('Required credentials not supplied via environment variables. Entering secure interactive setup...\n');
+
+    if (!adminName) {
+      adminName = await promptText('Enter Administrator Full Name');
+    }
+
+    if (!adminEmail) {
+      adminEmail = (await promptText('Enter Administrator Email Address')).toLowerCase();
+    }
+
+    if (!adminPassword) {
+      adminPassword = await promptPassword('Enter Administrator Password (hidden)');
+      const confirmPassword = await promptPassword('Confirm Administrator Password (hidden)');
+      if (adminPassword !== confirmPassword) {
+        const errorMsg = 'Passwords do not match.';
+        console.error(`❌ [Bootstrap Error] ${errorMsg}`);
+        return { success: false, message: errorMsg };
+      }
+    }
+  }
+
+  if (!adminName || !adminEmail || !adminPassword) {
+    const errorMsg =
+      'Missing required credentials. In non-interactive mode, set ADMIN_NAME, ADMIN_EMAIL, and ADMIN_PASSWORD environment variables.';
+    console.error(`❌ [Bootstrap Error] ${errorMsg}`);
+    return { success: false, message: errorMsg };
+  }
+
+  // 3. Validate name format
+  if (adminName.length < 2) {
+    const errorMsg = 'Administrator full name must be at least 2 characters long.';
+    console.error(`❌ [Bootstrap Error] ${errorMsg}`);
+    return { success: false, message: errorMsg };
+  }
+
+  // 4. Validate email format
+  if (!isValidEmail(adminEmail)) {
+    const errorMsg = `Invalid email address format: '${adminEmail}'`;
+    console.error(`❌ [Bootstrap Error] ${errorMsg}`);
+    return { success: false, message: errorMsg };
+  }
+
+  // 5. Validate password requirements
+  const passwordValidation = isValidPassword(adminPassword);
+  if (!passwordValidation.valid) {
+    const errorMsg = passwordValidation.reason || 'Password does not meet complexity requirements.';
+    console.error(`❌ [Bootstrap Error] ${errorMsg}`);
+    return { success: false, message: errorMsg };
+  }
+
+  // 6. Safety Check: If email is already taken by an existing non-admin account, refuse to overwrite or promote.
   const existingUser = await prisma.user.findUnique({
     where: { email: adminEmail },
     select: { id: true, email: true, role: true },
@@ -69,33 +108,54 @@ export async function bootstrapInitialAdmin(): Promise<BootstrapResult> {
     return { success: false, message: warnMsg };
   }
 
-  // 5. Securely hash password using standard bcrypt implementation
+  // 7. Securely hash password using standard bcrypt configuration
   const passwordHash = await bcrypt.hash(adminPassword, APP_CONSTANTS.PASSWORD_SALT_ROUNDS);
 
-  // 6. Create initial administrator
-  const admin = await prisma.user.create({
-    data: {
-      fullName: adminName,
-      email: adminEmail,
-      passwordHash,
-      role: UserRole.ADMIN,
-    },
-    select: {
-      id: true,
-      email: true,
-      fullName: true,
-      role: true,
-      createdAt: true,
-    },
+  // 8. Create initial administrator and audit record atomically
+  const admin = await prisma.$transaction(async (tx) => {
+    const newAdmin = await tx.user.create({
+      data: {
+        fullName: adminName!,
+        email: adminEmail!,
+        passwordHash,
+        role: UserRole.ADMIN,
+      },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        role: true,
+        createdAt: true,
+      },
+    });
+
+    // Record audit event in Outbox
+    await tx.outboxEvent.create({
+      data: {
+        aggregateType: 'USER',
+        aggregateId: newAdmin.id,
+        eventType: 'ADMIN_ACCOUNT_BOOTSTRAPPED',
+        payload: {
+          adminId: newAdmin.id,
+          adminEmail: newAdmin.email,
+          adminFullName: newAdmin.fullName,
+          bootstrappedAt: newAdmin.createdAt.toISOString(),
+          method: 'CLI_BOOTSTRAP',
+        },
+      },
+    });
+
+    return newAdmin;
   });
 
-  console.log('✅ Initial administrator successfully created:');
+  console.log('\n✅ Initial administrator successfully created:');
   console.log(`   User ID:   ${admin.id}`);
   console.log(`   Full Name: ${admin.fullName}`);
   console.log(`   Email:     ${admin.email}`);
   console.log(`   Role:      ${admin.role}`);
   console.log(`   Created:   ${admin.createdAt.toISOString()}`);
   console.log('   Security:  Password securely hashed with bcrypt (10 rounds). Plaintext credentials were not stored or logged.');
+  console.log('   Audit:     Logged ADMIN_ACCOUNT_BOOTSTRAPPED event to outbox.');
 
   return {
     success: true,
@@ -121,4 +181,3 @@ if (process.env.NODE_ENV !== 'test' && (require.main === module || process.argv[
       await prisma.$disconnect();
     });
 }
-

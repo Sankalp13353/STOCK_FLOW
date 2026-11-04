@@ -122,7 +122,9 @@ describe('Inventory Management API', () => {
       expect(secondRes.body.data.quantityAvailable).toBe(80);
 
       // Verify only 1 inventory record exists
-      const listRes = await request(app).get(`/api/v1/inventory/warehouse/${testWarehouseId}`);
+      const listRes = await request(app)
+        .get(`/api/v1/inventory/warehouse/${testWarehouseId}`)
+        .set('Authorization', `Bearer ${staffToken}`);
       expect(listRes.body.data.length).toBe(1);
     });
 
@@ -202,7 +204,9 @@ describe('Inventory Management API', () => {
     });
 
     it('should retrieve inventory list with product and warehouse info', async () => {
-      const res = await request(app).get('/api/v1/inventory');
+      const res = await request(app)
+        .get('/api/v1/inventory')
+        .set('Authorization', `Bearer ${adminToken}`);
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
@@ -213,7 +217,9 @@ describe('Inventory Management API', () => {
     });
 
     it('should retrieve product breakdown overview across warehouses', async () => {
-      const res = await request(app).get(`/api/v1/inventory?productId=${testProductId}`);
+      const res = await request(app)
+        .get(`/api/v1/inventory?productId=${testProductId}`)
+        .set('Authorization', `Bearer ${adminToken}`);
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
@@ -224,7 +230,9 @@ describe('Inventory Management API', () => {
     });
 
     it('should retrieve inventory for a specific warehouse', async () => {
-      const res = await request(app).get(`/api/v1/inventory/warehouse/${testWarehouseId}`);
+      const res = await request(app)
+        .get(`/api/v1/inventory/warehouse/${testWarehouseId}`)
+        .set('Authorization', `Bearer ${adminToken}`);
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
@@ -233,7 +241,9 @@ describe('Inventory Management API', () => {
     });
 
     it('should retrieve inventory for a specific warehouse via /:warehouseId alias', async () => {
-      const res = await request(app).get(`/api/v1/inventory/${testWarehouseId}`);
+      const res = await request(app)
+        .get(`/api/v1/inventory/${testWarehouseId}`)
+        .set('Authorization', `Bearer ${adminToken}`);
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);

@@ -62,6 +62,56 @@ enum ProcessedEventStatus {
   COMPLETED
 }
 
+enum TicketType {
+  ORDER_SHORTAGE
+  CUSTOMER_DECISION
+  LOW_STOCK
+}
+
+enum TicketStatus {
+  OPEN
+  ASSIGNED
+  IN_PROGRESS
+  RESOLVED
+  CANCELLED
+  CLOSED
+  PENDING
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum CustomerDecision {
+  PENDING
+  ACCEPTED_PARTIAL
+  REJECTED
+  EXPIRED
+}
+
+enum ApprovalStatus {
+  NOT_REQUIRED
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum NotificationType {
+  ORDER_SHORTAGE
+  CUSTOMER_DECISION_REQUIRED
+  LOW_STOCK_ALERT
+  TICKET_ASSIGNED
+  TICKET_RESOLVED
+  ORDER_APPROVED
+  ORDER_REJECTED
+}
+
 model User {
   id                   String                    @id @default(uuid()) @db.Uuid
   email                String                    @unique(map: "idx_users_email") @db.VarChar(255)
@@ -73,6 +123,10 @@ model User {
 
   orders               Order[]
   warehouseAssignments UserWarehouseAssignment[]
+  customerTickets      Ticket[]                  @relation("CustomerTickets")
+  assignedTickets      Ticket[]                  @relation("AssignedTickets")
+  approvedTickets      Ticket[]                  @relation("ApprovedTickets")
+  notifications        Notification[]
 
   @@map("users")
 }
@@ -92,6 +146,8 @@ model Warehouse {
   inventoryMovements InventoryMovement[]
   orderItems         OrderItem[]
   userAssignments    UserWarehouseAssignment[]
+  thresholds         MinimumStockThreshold[]
+  tickets            Ticket[]
 
   @@map("warehouses")
 }
@@ -109,6 +165,8 @@ model Product {
   inventory          Inventory[]
   inventoryMovements InventoryMovement[]
   orderItems         OrderItem[]
+  thresholds         MinimumStockThreshold[]
+  tickets            Ticket[]
 
   @@index([isActive], map: "idx_products_active")
   @@map("products")
@@ -166,6 +224,8 @@ model Order {
   orderItems            OrderItem[]
   inventoryReservations InventoryReservation[]
   payments              Payment[]
+  tickets               Ticket[]
+  notifications         Notification[]
 
   @@index([userId], map: "idx_orders_user_id")
   @@index([status], map: "idx_orders_status")
@@ -291,3 +351,93 @@ model UserWarehouseAssignment {
   @@index([warehouseId], map: "idx_user_warehouse_warehouse")
   @@map("user_warehouse_assignments")
 }
+
+model MinimumStockThreshold {
+  id              String     @id @default(uuid()) @db.Uuid
+  productId       String     @map("product_id") @db.Uuid
+  warehouseId     String?    @map("warehouse_id") @db.Uuid
+  minQuantity     Int        @default(10) @map("min_quantity")
+  reorderQuantity Int?       @default(0) @map("reorder_quantity")
+  isActive        Boolean    @default(true) @map("is_active")
+  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz
+
+  product         Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouse       Warehouse? @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, warehouseId], map: "uq_threshold_product_warehouse")
+  @@index([productId], map: "idx_threshold_product")
+  @@index([warehouseId], map: "idx_threshold_warehouse")
+  @@map("minimum_stock_thresholds")
+}
+
+model Ticket {
+  id                 String           @id @default(uuid()) @db.Uuid
+  ticketNumber       String           @unique(map: "idx_tickets_ticket_number") @map("ticket_number") @db.VarChar(50)
+  type               TicketType
+  status             TicketStatus     @default(OPEN)
+  priority           TicketPriority   @default(MEDIUM)
+  orderId            String?          @map("order_id") @db.Uuid
+  customerId         String?          @map("customer_id") @db.Uuid
+  productId          String?          @map("product_id") @db.Uuid
+  warehouseId        String?          @map("warehouse_id") @db.Uuid
+  requestedQuantity  Int?             @map("requested_quantity")
+  availableQuantity  Int?             @map("available_quantity")
+  shortageQuantity   Int?             @map("shortage_quantity")
+  quantityOffered    Int?             @map("quantity_offered")
+  thresholdQuantity  Int?             @map("threshold_quantity")
+  deficitQuantity    Int?             @map("deficit_quantity")
+  customerDecision   CustomerDecision? @map("customer_decision")
+  decisionDeadline   DateTime?        @map("decision_deadline") @db.Timestamptz
+  approvalStatus     ApprovalStatus   @default(NOT_REQUIRED) @map("approval_status")
+  approvedByUserId   String?          @map("approved_by_user_id") @db.Uuid
+  approvedAt         DateTime?        @map("approved_at") @db.Timestamptz
+  assignedToUserId   String?          @map("assigned_to_user_id") @db.Uuid
+  parentTicketId     String?          @map("parent_ticket_id") @db.Uuid
+  resolutionNotes    String?          @map("resolution_notes") @db.Text
+  metadata           Json?
+  createdAt          DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime         @updatedAt @map("updated_at") @db.Timestamptz
+  resolvedAt         DateTime?        @map("resolved_at") @db.Timestamptz
+
+  order              Order?           @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  customer           User?            @relation("CustomerTickets", fields: [customerId], references: [id], onDelete: SetNull)
+  product            Product?         @relation(fields: [productId], references: [id], onDelete: SetNull)
+  warehouse          Warehouse?       @relation(fields: [warehouseId], references: [id], onDelete: SetNull)
+  assignedToUser     User?            @relation("AssignedTickets", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  approvedByUser     User?            @relation("ApprovedTickets", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  parentTicket       Ticket?          @relation("LinkedTickets", fields: [parentTicketId], references: [id], onDelete: SetNull)
+  childTickets       Ticket[]         @relation("LinkedTickets")
+  notifications      Notification[]
+
+  @@index([type, status], map: "idx_tickets_type_status")
+  @@index([orderId], map: "idx_tickets_order_id")
+  @@index([customerId], map: "idx_tickets_customer_id")
+  @@index([productId, warehouseId], map: "idx_tickets_prod_wh")
+  @@index([assignedToUserId], map: "idx_tickets_assigned_user")
+  @@map("tickets")
+}
+
+model Notification {
+  id        String           @id @default(uuid()) @db.Uuid
+  userId    String           @map("user_id") @db.Uuid
+  ticketId  String?          @map("ticket_id") @db.Uuid
+  orderId   String?          @map("order_id") @db.Uuid
+  type      NotificationType
+  title     String           @db.VarChar(200)
+  message   String           @db.Text
+  isRead    Boolean          @default(false) @map("is_read")
+  readAt    DateTime?        @map("read_at") @db.Timestamptz
+  dedupKey  String?          @unique(map: "idx_notifications_dedup") @map("dedup_key") @db.VarChar(255)
+  metadata  Json?
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz
+
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ticket    Ticket?          @relation(fields: [ticketId], references: [id], onDelete: SetNull)
+  order     Order?           @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([userId, isRead], map: "idx_notifications_user_unread")
+  @@index([userId, createdAt], map: "idx_notifications_user_created")
+  @@map("notifications")
+}
+

@@ -94,7 +94,9 @@ describe('Order Management & Reservation API', () => {
       expect(res.body.data.reservations[0].status).toBe('ACTIVE');
 
       // Verify inventory quantity_reserved incremented
-      const invRes = await request(app).get(`/api/v1/inventory?productId=${productIdA}`);
+      const invRes = await request(app)
+        .get(`/api/v1/inventory?productId=${productIdA}`)
+        .set('Authorization', `Bearer ${adminToken}`);
       expect(invRes.body.data.totalReserved).toBe(2);
       expect(invRes.body.data.totalAvailable).toBe(8);
     });
@@ -150,6 +152,7 @@ describe('Order Management & Reservation API', () => {
       const payload = {
         shippingAddress: '202 Exceed St, Chicago, IL',
         items: [{ productId: productIdA, warehouseId, quantity: 100 }], // Only 10 available
+        allowPartial: false,
       };
 
       const res = await request(app)
@@ -243,7 +246,9 @@ describe('Order Management & Reservation API', () => {
 
     it('should cancel reserved order and release held stock with HTTP 200', async () => {
       // Stock should have 4 reserved
-      let inv = await request(app).get(`/api/v1/inventory?productId=${productIdA}`);
+      let inv = await request(app)
+        .get(`/api/v1/inventory?productId=${productIdA}`)
+        .set('Authorization', `Bearer ${adminToken}`);
       expect(inv.body.data.totalReserved).toBe(4);
       expect(inv.body.data.totalAvailable).toBe(6);
 
@@ -258,7 +263,9 @@ describe('Order Management & Reservation API', () => {
       expect(res.body.data.compensation.stockReleased).toBe(true);
 
       // Stock reservation should be decremented back to 0
-      inv = await request(app).get(`/api/v1/inventory?productId=${productIdA}`);
+      inv = await request(app)
+        .get(`/api/v1/inventory?productId=${productIdA}`)
+        .set('Authorization', `Bearer ${adminToken}`);
       expect(inv.body.data.totalReserved).toBe(0);
       expect(inv.body.data.totalAvailable).toBe(10);
     });
@@ -277,7 +284,9 @@ describe('Order Management & Reservation API', () => {
       expect(secondRes.body.data.status).toBe('CANCELLED');
       expect(secondRes.body.data.compensation.stockReleased).toBe(false);
 
-      const inv = await request(app).get(`/api/v1/inventory?productId=${productIdA}`);
+      const inv = await request(app)
+        .get(`/api/v1/inventory?productId=${productIdA}`)
+        .set('Authorization', `Bearer ${adminToken}`);
       expect(inv.body.data.totalReserved).toBe(0);
       expect(inv.body.data.totalAvailable).toBe(10);
     });

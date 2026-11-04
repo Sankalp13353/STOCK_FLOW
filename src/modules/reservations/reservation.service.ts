@@ -2,6 +2,7 @@ import { MovementType, OrderStatus, ReservationStatus } from '@prisma/client';
 import { prisma } from '../../database/prisma';
 import { EVENT_TYPES } from '../../config/constants';
 import { outboxService } from '../outbox/outbox.service';
+import { thresholdEvaluationService } from '../inventory/threshold-evaluation.service';
 
 export interface ExpiryResult {
   expiredReservationsCount: number;
@@ -107,6 +108,15 @@ export class ReservationService {
           expiredOrdersCount++;
         }
       }
+
+      // Evaluate stock after reservation release
+      staleReservations.forEach((res) => {
+        thresholdEvaluationService
+          .evaluateStockAfterChange(res.inventory.productId, res.inventory.warehouseId)
+          .catch((err) => {
+            console.error('Failed to evaluate threshold after reservation expiry:', err);
+          });
+      });
 
       return {
         expiredReservationsCount: staleReservations.length,
