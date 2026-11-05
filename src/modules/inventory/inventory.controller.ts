@@ -27,6 +27,37 @@ export class InventoryController {
     }
   }
 
+  public async getMovements(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user ? { userId: req.user.userId, role: req.user.role } : undefined;
+      const result = await inventoryService.getMovements(req.query as any, user!);
+      sendSuccess(res, result, 200);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  public async getReservations(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user ? { userId: req.user.userId, role: req.user.role } : undefined;
+      const result = await inventoryService.getReservations(req.query as any, user!);
+      sendSuccess(res, result, 200);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  public async getMetrics(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user ? { userId: req.user.userId, role: req.user.role } : undefined;
+      const warehouseId = typeof req.query.warehouseId === 'string' ? req.query.warehouseId : undefined;
+      const result = await inventoryService.getMetrics(warehouseId, user);
+      sendSuccess(res, result, 200);
+    } catch (error) {
+      next(error);
+    }
+  }
+
   public async getByWarehouse(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const warehouseId = Array.isArray(req.params.warehouseId)

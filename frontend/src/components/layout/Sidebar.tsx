@@ -12,6 +12,7 @@ import {
   X,
   Layers,
   Ticket,
+  Users,
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { Badge } from '../ui/Badge';
@@ -46,8 +47,20 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
         { name: 'Settings', path: '/settings', icon: Settings },
       ];
     }
+    if (user?.role === 'ADMIN') {
+      return [
+        { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
+        { name: 'Products', path: '/products', icon: Package },
+        { name: 'Inventory', path: '/inventory', icon: Boxes },
+        { name: 'Warehouses', path: '/warehouses', icon: Warehouse },
+        { name: 'Orders', path: '/orders', icon: ShoppingCart },
+        { name: 'Tickets', path: '/tickets', icon: Ticket },
+        { name: 'Users', path: '/users', icon: Users },
+        { name: 'Settings', path: '/settings', icon: Settings },
+      ];
+    }
     return NAV_ITEMS;
-  }, [isCustomer]);
+  }, [isCustomer, user?.role]);
 
   const roleBadgeVariant =
     user?.role === 'ADMIN'

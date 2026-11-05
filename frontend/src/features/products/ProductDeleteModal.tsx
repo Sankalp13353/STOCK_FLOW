@@ -2,14 +2,15 @@ import { useState } from 'react';
 import { Modal } from '../../components/ui/Modal';
 import { Button } from '../../components/ui/Button';
 import { Product } from '../../types';
-import { deleteProduct } from '../../api/products';
-import { AlertTriangle, ShieldAlert } from 'lucide-react';
+import { deleteProduct, updateProduct } from '../../api/products';
+import { AlertTriangle, Archive, ShieldAlert } from 'lucide-react';
 
 interface ProductDeleteModalProps {
   isOpen: boolean;
   onClose: () => void;
   product: Product | null;
   onSuccess: (deletedProduct: Product) => void;
+  onDeactivateSuccess?: (updatedProduct: Product) => void;
 }
 
 export function ProductDeleteModal({
@@ -17,8 +18,10 @@ export function ProductDeleteModal({
   onClose,
   product,
   onSuccess,
+  onDeactivateSuccess,
 }: ProductDeleteModalProps) {
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isDeactivating, setIsDeactivating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   if (!product) return null;
@@ -33,21 +36,47 @@ export function ProductDeleteModal({
       onSuccess(deleted);
       onClose();
     } catch (err: any) {
-      if (
+      const isReferential =
         err.code === 'FOREIGN_KEY_VIOLATION' ||
+        err.code === 'CONFLICT' ||
+        err.status === 409 ||
+        err.status === 400 ||
         err.message?.includes('foreign key') ||
         err.message?.includes('Related record') ||
-        err.status === 400 ||
-        err.status === 409
-      ) {
-        setError(
-          `Cannot delete product "${product.sku}" because it is referenced by existing warehouse inventory allocations or customer order records. In StockFlow, products with active relations cannot be removed to prevent orphaned ledger records. To prevent further orders, edit the product and set its status to Inactive.`
-        );
-      } else {
-        setError(err.message || 'An error occurred while attempting to delete the product.');
-      }
+        err.message?.includes('stock') ||
+        err.message?.includes('inventory') ||
+        err.message?.includes('ledger') ||
+        err.message?.includes('order');
+
+      const message =
+        err.message ||
+        (isReferential
+          ? `Cannot delete product "${product.sku}" because it is referenced by existing warehouse inventory allocations or customer order records. In StockFlow, products with active relations cannot be removed to prevent orphaned ledger records. To prevent further orders, edit the product and set its status to Inactive.`
+          : 'An error occurred while attempting to delete the product.');
+
+      setError(message);
     } finally {
       setIsDeleting(false);
+    }
+  }
+
+  async function handleDeactivate() {
+    if (!product) return;
+    setIsDeactivating(true);
+    setError(null);
+
+    try {
+      const updated = await updateProduct(product.id, { isActive: false });
+      if (onDeactivateSuccess) {
+        onDeactivateSuccess(updated);
+      } else {
+        onSuccess(updated);
+      }
+      onClose();
+    } catch (err: any) {
+      setError(err.message || 'Failed to deactivate product.');
+    } finally {
+      setIsDeactivating(false);
     }
   }
 
@@ -59,14 +88,32 @@ export function ProductDeleteModal({
       maxWidth="md"
       footer={
         <>
-          <Button variant="outline" size="sm" onClick={onClose} disabled={isDeleting}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onClose}
+            disabled={isDeleting || isDeactivating}
+          >
             Cancel
           </Button>
+          {product.isActive && error && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={handleDeactivate}
+              isLoading={isDeactivating}
+              disabled={isDeleting}
+              leftIcon={<Archive className="w-4 h-4" />}
+            >
+              Deactivate Instead
+            </Button>
+          )}
           <Button
             variant="danger"
             size="sm"
             onClick={handleDelete}
             isLoading={isDeleting}
+            disabled={isDeactivating}
             leftIcon={<AlertTriangle className="w-4 h-4" />}
           >
             Permanently Delete
@@ -85,15 +132,39 @@ export function ProductDeleteModal({
               You are about to delete <span className="font-mono font-semibold">{product.sku}</span>{' '}
               — <strong>{product.name}</strong>.
             </p>
+            {!product.isActive && (
+              <p className="text-slate-600 font-medium">
+                (Current status: <span className="text-amber-800">Inactive / Archived</span>)
+              </p>
+            )}
           </div>
         </div>
 
         {error && (
-          <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-lg flex items-start gap-2.5 text-xs text-rose-800">
-            <ShieldAlert className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
-            <div className="flex-1 leading-relaxed">
-              <strong>Referential Integrity Constraint:</strong> {error}
+          <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-lg flex flex-col gap-2.5 text-xs text-rose-800">
+            <div className="flex items-start gap-2.5">
+              <ShieldAlert className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+              <div className="flex-1 leading-relaxed">
+                <strong>Referential Integrity Constraint:</strong> {error}
+              </div>
             </div>
+            {product.isActive && (
+              <div className="pt-2 border-t border-rose-200/70 flex items-center justify-between gap-2">
+                <span className="text-[11px] text-rose-700">
+                  Recommended action: Archive this SKU to preserve historical ledgers while preventing new orders.
+                </span>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={handleDeactivate}
+                  isLoading={isDeactivating}
+                  leftIcon={<Archive className="w-3.5 h-3.5" />}
+                  className="bg-white border-rose-300 text-rose-900 hover:bg-rose-100 shrink-0"
+                >
+                  Deactivate SKU Now
+                </Button>
+              </div>
+            )}
           </div>
         )}
 

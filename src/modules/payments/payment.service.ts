@@ -85,39 +85,11 @@ export class PaymentService {
           },
         });
 
-        // Commit active reservations: deduct from on_hand & reserved
-        for (const res of order.inventoryReservations) {
-          if (res.status === ReservationStatus.ACTIVE) {
-            // Lock inventory row
-            await tx.$executeRaw`
-              SELECT id FROM inventory WHERE id = ${res.inventoryId}::uuid FOR UPDATE
-            `;
-
-            await tx.inventory.update({
-              where: { id: res.inventoryId },
-              data: {
-                quantityOnHand: { decrement: res.quantity },
-                quantityReserved: { decrement: res.quantity },
-              },
-            });
-
-            await tx.inventoryReservation.update({
-              where: { id: res.id },
-              data: { status: ReservationStatus.COMMITTED },
-            });
-
-            await tx.inventoryMovement.create({
-              data: {
-                productId: res.inventory.productId,
-                warehouseId: res.inventory.warehouseId,
-                quantityDelta: -res.quantity,
-                movementType: MovementType.FULFILLMENT_DEDUCTION,
-                referenceId: order.id,
-                notes: `Order payment confirmed. Committed ${res.quantity} unit(s).`,
-              },
-            });
-          }
-        }
+        // In the corrected fulfilment lifecycle:
+        // Payment success transitions the order to CONFIRMED.
+        // Existing inventory reservations remain ACTIVE until physical warehouse dispatch.
+        // quantityOnHand and quantityReserved remain unchanged at payment time.
+        // No DISPATCH movement is recorded until physical goods leave the warehouse.
 
         // Update Order to CONFIRMED
         await tx.order.update({
@@ -140,20 +112,11 @@ export class PaymentService {
           },
         });
 
-        // Evaluate stock against threshold following payment fulfillment commit
-        order.inventoryReservations.forEach((res) => {
-          thresholdEvaluationService
-            .evaluateStockAfterChange(res.inventory.productId, res.inventory.warehouseId)
-            .catch((err) => {
-              console.error('Failed to evaluate threshold after payment confirmation:', err);
-            });
-        });
-
         return {
           payment,
           orderId,
           orderStatus: OrderStatus.CONFIRMED,
-          message: 'Payment processed successfully. Order confirmed.',
+          message: 'Payment processed successfully. Order confirmed awaiting warehouse processing.',
         };
       } else {
         // Payment Failure Simulation

@@ -8,6 +8,9 @@ export interface Warehouse {
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+  managers?: any[];
+  staff?: any[];
+  userAssignments?: any[];
 }
 
 export interface CreateWarehouseInput {

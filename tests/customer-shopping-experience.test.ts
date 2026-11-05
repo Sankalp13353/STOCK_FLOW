@@ -462,14 +462,14 @@ describe('StockFlow — Customer Shopping Experience & Security Audit', () => {
 
     expect(orderDetailRes.status).toBe(200);
     expect(orderDetailRes.body.data.status).toBe('CONFIRMED');
-    expect(orderDetailRes.body.data.inventoryReservations[0].status).toBe('COMMITTED');
+    expect(orderDetailRes.body.data.inventoryReservations[0].status).toBe('ACTIVE');
 
-    // 4. Verify inventory deduction: 20 total - 2 committed = 18 on hand, 0 reserved
+    // 4. Verify inventory: physical stock is NOT decremented upon payment (remains 20), reservation remains held (2 reserved)
     const inv = await prisma.inventory.findFirst({
       where: { productId: activeProduct1.id, warehouseId: warehouse.id },
     });
-    expect(inv?.quantityOnHand).toBe(18);
-    expect(inv?.quantityReserved).toBe(0);
+    expect(inv?.quantityOnHand).toBe(20);
+    expect(inv?.quantityReserved).toBe(2);
   });
 
   // 16. Customer cancellation releases reserved inventory

@@ -84,7 +84,8 @@ export class ProductService {
     if (!skipCache) {
       const cached = await redis.get<Product>(cacheKey);
       if (cached) {
-        if (user?.role === UserRole.CUSTOMER && !cached.isActive) {
+        const isCustomer = user ? user.role === UserRole.CUSTOMER : true;
+        if (isCustomer && !cached.isActive) {
           throw new NotFoundError(`Product with ID '${id}' not found`);
         }
         return { product: cached, source: 'cache' };
@@ -196,9 +197,14 @@ export class ProductService {
     return result;
   }
 
-  public async updateProduct(id: string, input: UpdateProductInput): Promise<Product> {
-    // 1. Verify existence
-    await this.getProductById(id);
+  public async updateProduct(
+    id: string,
+    input: UpdateProductInput,
+    user?: { userId: string; role: UserRole }
+  ): Promise<Product> {
+    // 1. Verify existence (admins can access inactive products as well)
+    const adminUser = user?.role === UserRole.ADMIN ? user : { userId: user?.userId || 'system', role: UserRole.ADMIN };
+    await this.getProductById(id, true, adminUser);
 
     // 2. If SKU is being updated, verify it is not taken by another product
     if (input.sku) {
@@ -227,13 +233,79 @@ export class ProductService {
     return updated;
   }
 
-  public async deleteProduct(id: string): Promise<Product> {
-    // Verify existence
-    await this.getProductById(id);
+  public async deleteProduct(
+    id: string,
+    user?: { userId: string; role: UserRole }
+  ): Promise<Product> {
+    // 1. Verify existence (admins can access inactive products as well)
+    const adminUser = user?.role === UserRole.ADMIN ? user : { userId: user?.userId || 'system', role: UserRole.ADMIN };
+    const product = await this.getProductById(id, true, adminUser);
 
-    const deleted = await prisma.product.delete({
-      where: { id },
+    // 2. Check active stock in warehouse inventory
+    const inventoryRecords = await prisma.inventory.findMany({
+      where: { productId: id },
+      select: { id: true, quantityOnHand: true, quantityReserved: true },
     });
+
+    const totalOnHand = inventoryRecords.reduce((sum, inv) => sum + inv.quantityOnHand, 0);
+    const totalReserved = inventoryRecords.reduce((sum, inv) => sum + inv.quantityReserved, 0);
+
+    if (totalOnHand > 0 || totalReserved > 0) {
+      throw new ConflictError(
+        `Cannot delete product '${product.sku}' because it has active inventory stock (${totalOnHand} on hand, ${totalReserved} reserved) across warehouses. Adjust inventory to zero or deactivate the product instead.`
+      );
+    }
+
+    // 3. Check inventory movement ledger history
+    const movementsCount = await prisma.inventoryMovement.count({
+      where: { productId: id },
+    });
+
+    if (movementsCount > 0) {
+      throw new ConflictError(
+        `Cannot delete product '${product.sku}' because it has ${movementsCount} recorded inventory ledger movements. To preserve audit and accounting integrity, products with movement history cannot be deleted. Please set its status to Inactive instead.`
+      );
+    }
+
+    // 4. Check customer order history
+    const orderItemsCount = await prisma.orderItem.count({
+      where: { productId: id },
+    });
+
+    if (orderItemsCount > 0) {
+      throw new ConflictError(
+        `Cannot delete product '${product.sku}' because it is referenced in ${orderItemsCount} customer order(s). To preserve order fulfillment records, products with order history cannot be deleted. Please set its status to Inactive instead.`
+      );
+    }
+
+    // 5. Delete in transaction. If there are zero-stock inventory records with no movements and no orders, clean them up safely.
+    let deleted: Product;
+    try {
+      deleted = await prisma.$transaction(async (tx) => {
+        if (inventoryRecords.length > 0) {
+          await tx.inventory.deleteMany({
+            where: { productId: id },
+          });
+        }
+        return await tx.product.delete({
+          where: { id },
+        });
+      });
+    } catch (err: any) {
+      if (
+        err?.code === 'P2003' ||
+        err?.code === 'P2014' ||
+        err?.message?.includes('23001') ||
+        err?.message?.includes('23503') ||
+        err?.message?.includes('violates RESTRICT setting') ||
+        err?.message?.includes('foreign key constraint')
+      ) {
+        throw new ConflictError(
+          `Cannot delete product '${product.sku}' because it is referenced by existing database records (inventory, orders, or ledger movements). Please deactivate the product instead.`
+        );
+      }
+      throw err;
+    }
 
     // Invalidate detail cache and list caches
     await this.invalidateProductCache(id);

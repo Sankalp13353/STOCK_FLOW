@@ -21,6 +21,7 @@ enum MovementType {
   RESERVATION_RELEASE
   FULFILLMENT_DEDUCTION
   AUDIT_ADJUSTMENT
+  DISPATCH
 }
 
 enum OrderStatus {
@@ -118,6 +119,7 @@ model User {
   passwordHash         String                    @map("password_hash") @db.VarChar(255)
   fullName             String                    @map("full_name") @db.VarChar(100)
   role                 UserRole                  @default(CUSTOMER)
+  isActive             Boolean                   @default(true) @map("is_active")
   createdAt            DateTime                  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt            DateTime                  @updatedAt @map("updated_at") @db.Timestamptz
 

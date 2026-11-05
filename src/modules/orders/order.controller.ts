@@ -73,6 +73,48 @@ export class OrderController {
       next(error);
     }
   }
+
+  public async process(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const orderId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      const order = await orderService.processOrder(
+        orderId,
+        { userId: req.user!.userId, role: req.user!.role },
+        req.body
+      );
+      sendSuccess(res, order, 200);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  public async dispatch(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const orderId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      const order = await orderService.dispatchOrder(
+        orderId,
+        { userId: req.user!.userId, role: req.user!.role },
+        req.body
+      );
+      sendSuccess(res, order, 200);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  public async deliver(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const orderId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      const order = await orderService.deliverOrder(
+        orderId,
+        { userId: req.user!.userId, role: req.user!.role },
+        req.body
+      );
+      sendSuccess(res, order, 200);
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export const orderController = new OrderController();

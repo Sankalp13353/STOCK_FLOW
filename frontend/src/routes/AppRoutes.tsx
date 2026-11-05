@@ -11,12 +11,12 @@ import { CartPage } from '../pages/CartPage';
 import { CheckoutPage } from '../pages/CheckoutPage';
 import { MyOrdersPage } from '../pages/MyOrdersPage';
 import { OrderTrackingPage } from '../pages/OrderTrackingPage';
+import { OrdersPage } from '../pages/OrdersPage';
+import { OperationalOrderDetailPage } from '../pages/OperationalOrderDetailPage';
 import { TicketsPage } from '../pages/TicketsPage';
-import {
-  InventoryPage,
-  OrdersPage,
-  SettingsPage,
-} from '../pages/PlaceholderPages';
+import { InventoryPage } from '../pages/InventoryPage';
+import { SettingsPage } from '../pages/SettingsPage';
+import { UsersPage } from '../pages/UsersPage';
 import { NotFoundPage } from '../pages/NotFoundPage';
 import { useAuth } from '../hooks/useAuth';
 
@@ -26,6 +26,14 @@ function OrdersRoute() {
     return <MyOrdersPage />;
   }
   return <OrdersPage />;
+}
+
+function OrderDetailRoute() {
+  const { user } = useAuth();
+  if (user?.role === 'CUSTOMER') {
+    return <OrderTrackingPage />;
+  }
+  return <OperationalOrderDetailPage />;
 }
 
 export function AppRoutes() {
@@ -50,8 +58,9 @@ export function AppRoutes() {
           <Route path="/inventory" element={<InventoryPage />} />
           <Route path="/warehouses" element={<WarehousesPage />} />
           <Route path="/orders" element={<OrdersRoute />} />
-          <Route path="/orders/:id" element={<OrderTrackingPage />} />
+          <Route path="/orders/:id" element={<OrderDetailRoute />} />
           <Route path="/tickets" element={<TicketsPage />} />
+          <Route path="/users" element={<UsersPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
       </Route>

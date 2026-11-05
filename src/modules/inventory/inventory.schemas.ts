@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MovementType, ReservationStatus } from '@prisma/client';
 
 export const addStockSchema = z.object({
   productId: z.string().uuid('Invalid Product UUID format'),
@@ -7,12 +8,38 @@ export const addStockSchema = z.object({
     .number()
     .int('Quantity must be an integer')
     .positive('Stock addition quantity must be greater than zero'),
+  referenceId: z.string().uuid('Invalid Reference UUID format').optional(),
+  supplier: z.string().trim().max(200).optional(),
   notes: z.string().trim().max(500).optional(),
 });
 
 export const inventoryQuerySchema = z.object({
   productId: z.string().uuid('Invalid Product UUID format').optional(),
   warehouseId: z.string().uuid('Invalid Warehouse UUID format').optional(),
+  search: z.string().trim().optional(),
+  lowStockOnly: z.enum(['true', 'false']).optional(),
+});
+
+export const movementsQuerySchema = z.object({
+  page: z.coerce.number().int().positive().optional().default(1),
+  limit: z.coerce.number().int().positive().max(100).optional().default(20),
+  productId: z.string().uuid('Invalid Product UUID format').optional(),
+  warehouseId: z.string().uuid('Invalid Warehouse UUID format').optional(),
+  movementType: z.nativeEnum(MovementType).optional(),
+  referenceId: z.string().optional(),
+  search: z.string().trim().optional(),
+  startDate: z.string().trim().optional(),
+  endDate: z.string().trim().optional(),
+});
+
+export const reservationsQuerySchema = z.object({
+  page: z.coerce.number().int().positive().optional().default(1),
+  limit: z.coerce.number().int().positive().max(100).optional().default(20),
+  productId: z.string().uuid('Invalid Product UUID format').optional(),
+  warehouseId: z.string().uuid('Invalid Warehouse UUID format').optional(),
+  status: z.nativeEnum(ReservationStatus).optional(),
+  orderId: z.string().uuid('Invalid Order UUID format').optional(),
+  search: z.string().trim().optional(),
 });
 
 export const warehouseIdParamSchema = z.object({
@@ -61,6 +88,8 @@ export const thresholdIdParamSchema = z.object({
 
 export type AddStockInput = z.infer<typeof addStockSchema>;
 export type InventoryQuery = z.infer<typeof inventoryQuerySchema>;
+export type MovementsQuery = z.infer<typeof movementsQuerySchema>;
+export type ReservationsQuery = z.infer<typeof reservationsQuerySchema>;
 export type CreateThresholdInput = z.infer<typeof createThresholdSchema>;
 export type UpdateThresholdInput = z.infer<typeof updateThresholdSchema>;
 export type ThresholdQuery = z.infer<typeof thresholdQuerySchema>;

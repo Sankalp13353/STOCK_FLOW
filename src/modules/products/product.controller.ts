@@ -36,20 +36,22 @@ export class ProductController {
     }
   }
 
-  public async update(req: Request, res: Response, next: NextFunction): Promise<void> {
+  public async update(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-      const product = await productService.updateProduct(id, req.body);
+      const user = req.user ? { userId: req.user.userId, role: req.user.role } : undefined;
+      const product = await productService.updateProduct(id, req.body, user);
       sendSuccess(res, product, 200);
     } catch (error) {
       next(error);
     }
   }
 
-  public async delete(req: Request, res: Response, next: NextFunction): Promise<void> {
+  public async delete(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-      const product = await productService.deleteProduct(id);
+      const user = req.user ? { userId: req.user.userId, role: req.user.role } : undefined;
+      const product = await productService.deleteProduct(id, user);
       sendSuccess(res, product, 200);
     } catch (error) {
       next(error);

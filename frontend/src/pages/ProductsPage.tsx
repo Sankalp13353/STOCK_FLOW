@@ -136,6 +136,14 @@ export function ProductsPage() {
     );
   }
 
+  function handleDeactivateSuccess(updatedProduct: Product) {
+    queryClient.invalidateQueries({ queryKey: ['products'] });
+    queryClient.invalidateQueries({ queryKey: ['dashboard-data'] });
+    triggerNotification(
+      `Product "${updatedProduct.sku}" was successfully deactivated and archived.`
+    );
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -422,6 +430,7 @@ export function ProductsPage() {
         onClose={() => setIsDeleteOpen(false)}
         product={deletingProduct}
         onSuccess={handleDeleteSuccess}
+        onDeactivateSuccess={handleDeactivateSuccess}
       />
 
       <ProductDetailModal

@@ -63,5 +63,12 @@ router.post(
   ticketController.customerDecision
 );
 
+router.post(
+  '/:id/decision',
+  authorize(UserRole.CUSTOMER, UserRole.ADMIN),
+  validate({ params: ticketIdParamSchema, body: customerDecisionSchema }),
+  ticketController.customerDecision
+);
+
 export const ticketRouter = router;
 

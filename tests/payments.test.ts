@@ -59,7 +59,7 @@ describe('Payment Simulation & Stock Settlement API', () => {
     orderId = ordRes.body.data.id;
   });
 
-  it('should process payment SUCCESS, transition order to CONFIRMED, and permanently commit stock', async () => {
+  it('should process payment SUCCESS, transition order to CONFIRMED, and preserve reservation without premature stock deduction', async () => {
     // Before payment: on_hand = 10, reserved = 2, available = 8
     let inv = await request(app)
       .get(`/api/v1/inventory?productId=${productId}`)
@@ -84,20 +84,20 @@ describe('Payment Simulation & Stock Settlement API', () => {
     expect(res.body.data.orderStatus).toBe('CONFIRMED');
     expect(res.body.data.payment.status).toBe('SUCCESS');
 
-    // After payment committed: on_hand = 8, reserved = 0, available = 8
+    // After payment confirmed: physical stock is NOT decremented (on_hand = 10), reservation is preserved (reserved = 2)
     inv = await request(app)
       .get(`/api/v1/inventory?productId=${productId}`)
       .set('Authorization', `Bearer ${adminToken}`);
-    expect(inv.body.data.totalOnHand).toBe(8);
-    expect(inv.body.data.totalReserved).toBe(0);
+    expect(inv.body.data.totalOnHand).toBe(10);
+    expect(inv.body.data.totalReserved).toBe(2);
     expect(inv.body.data.totalAvailable).toBe(8);
 
-    // Verify order status
+    // Verify order status and active reservation awaiting fulfilment dispatch
     const orderRes = await request(app)
       .get(`/api/v1/orders/${orderId}`)
       .set('Authorization', `Bearer ${customerToken}`);
     expect(orderRes.body.data.status).toBe('CONFIRMED');
-    expect(orderRes.body.data.inventoryReservations[0].status).toBe('COMMITTED');
+    expect(orderRes.body.data.inventoryReservations[0].status).toBe('ACTIVE');
   });
 
   it('should process payment FAIL, transition order to PAYMENT_FAILED, and release reserved stock', async () => {

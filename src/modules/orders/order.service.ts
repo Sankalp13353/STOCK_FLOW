@@ -601,6 +601,9 @@ export class OrderService {
     const order = await prisma.order.findUnique({
       where: { id: orderId },
       include: {
+        user: {
+          select: { id: true, email: true, fullName: true },
+        },
         orderItems: {
           include: {
             product: { select: { id: true, sku: true, name: true, priceCents: true } },
@@ -617,17 +620,12 @@ export class OrderService {
     }
 
     if (user.role === UserRole.ADMIN) {
-      return order;
-    }
-
-    if (user.role === UserRole.CUSTOMER) {
-      if (order.userId === user.userId) {
-        return order;
+      // Organization-wide access
+    } else if (user.role === UserRole.CUSTOMER) {
+      if (order.userId !== user.userId) {
+        throw new ForbiddenError('You are not authorized to view this order');
       }
-      throw new ForbiddenError('You are not authorized to view this order');
-    }
-
-    if (user.role === UserRole.WAREHOUSE_MANAGER || user.role === UserRole.WAREHOUSE_STAFF) {
+    } else if (user.role === UserRole.WAREHOUSE_MANAGER || user.role === UserRole.WAREHOUSE_STAFF) {
       const assignedIds = await warehouseAccessService.getAccessibleWarehouseIds(
         user.userId,
         user.role
@@ -636,46 +634,138 @@ export class OrderService {
       const isAssigned = order.orderItems.some((item) =>
         (assignedIds as string[]).includes(item.warehouseId)
       );
-      if (isAssigned) {
-        return order;
+      if (!isAssigned) {
+        throw new ForbiddenError('You are not authorized to view this order');
       }
+    } else {
+      throw new ForbiddenError('You are not authorized to view this order');
     }
 
-    throw new ForbiddenError('You are not authorized to view this order');
+    // Fetch relevant inventory movements for this order if available
+    const inventoryMovements = await prisma.inventoryMovement.findMany({
+      where: { referenceId: orderId },
+      include: {
+        product: { select: { id: true, sku: true, name: true } },
+        warehouse: { select: { id: true, code: true, name: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return {
+      ...order,
+      inventoryMovements,
+    };
   }
 
   /**
-   * Lists orders with role-based boundaries and pagination:
+   * Lists orders with role-based boundaries, search, filters and pagination:
    * - ADMIN: Organization-wide order listing.
    * - WAREHOUSE_MANAGER & WAREHOUSE_STAFF: Only orders containing items fulfilled by their assigned warehouses.
    * - CUSTOMER: Strictly restricted to their own submitted orders (where.userId === user.userId).
    */
   public async listOrders(query: ListOrdersQuery, user: { userId: string; role: UserRole }) {
-    const { page, limit, status } = query;
+    const { page, limit, status, search, warehouseId, startDate, endDate } = query;
     const skip = (page - 1) * limit;
 
-    const where: Prisma.OrderWhereInput = {};
+    const andConditions: Prisma.OrderWhereInput[] = [];
 
+    // Role-based boundary
     if (user.role === UserRole.ADMIN) {
       // Organization-wide visibility
+      if (warehouseId) {
+        andConditions.push({
+          orderItems: {
+            some: { warehouseId },
+          },
+        });
+      }
     } else if (user.role === UserRole.WAREHOUSE_MANAGER || user.role === UserRole.WAREHOUSE_STAFF) {
-      const assignedIds = await warehouseAccessService.getAccessibleWarehouseIds(
+      const assignedIds = (await warehouseAccessService.getAccessibleWarehouseIds(
         user.userId,
         user.role
-      );
-      where.orderItems = {
-        some: {
-          warehouseId: { in: assignedIds as string[] },
-        },
-      };
+      )) as string[];
+
+      if (warehouseId) {
+        if (assignedIds.includes(warehouseId)) {
+          andConditions.push({
+            orderItems: {
+              some: { warehouseId },
+            },
+          });
+        } else {
+          // Warehouse not in assigned list -> empty match
+          andConditions.push({
+            id: '00000000-0000-0000-0000-000000000000',
+          });
+        }
+      } else {
+        andConditions.push({
+          orderItems: {
+            some: {
+              warehouseId: { in: assignedIds },
+            },
+          },
+        });
+      }
     } else {
       // CUSTOMER: Strictly own orders
-      where.userId = user.userId;
+      andConditions.push({ userId: user.userId });
     }
 
     if (status) {
-      where.status = status;
+      andConditions.push({ status });
     }
+
+    if (search && search.trim()) {
+      const q = search.trim();
+      const isUuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(q);
+
+      const searchOr: Prisma.OrderWhereInput[] = [
+        { orderNumber: { contains: q, mode: 'insensitive' } },
+        { user: { email: { contains: q, mode: 'insensitive' } } },
+        { user: { fullName: { contains: q, mode: 'insensitive' } } },
+        {
+          orderItems: {
+            some: {
+              product: {
+                OR: [
+                  { name: { contains: q, mode: 'insensitive' } },
+                  { sku: { contains: q, mode: 'insensitive' } },
+                ],
+              },
+            },
+          },
+        },
+      ];
+
+      if (isUuid) {
+        searchOr.push({ id: q });
+      }
+
+      andConditions.push({ OR: searchOr });
+    }
+
+    if (startDate || endDate) {
+      const dateFilter: Prisma.DateTimeFilter = {};
+      if (startDate) {
+        const start = new Date(startDate);
+        if (!isNaN(start.getTime())) {
+          dateFilter.gte = start;
+        }
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        if (!isNaN(end.getTime())) {
+          if (endDate.length <= 10) {
+            end.setHours(23, 59, 59, 999);
+          }
+          dateFilter.lte = end;
+        }
+      }
+      andConditions.push({ createdAt: dateFilter });
+    }
+
+    const where: Prisma.OrderWhereInput = andConditions.length > 0 ? { AND: andConditions } : {};
 
     const [totalRecords, orders] = await Promise.all([
       prisma.order.count({ where }),
@@ -685,9 +775,24 @@ export class OrderService {
         take: limit,
         orderBy: { createdAt: 'desc' },
         include: {
+          user: {
+            select: {
+              id: true,
+              email: true,
+              fullName: true,
+            },
+          },
           orderItems: {
             include: {
-              product: { select: { sku: true, name: true } },
+              product: { select: { id: true, sku: true, name: true, priceCents: true } },
+              warehouse: { select: { id: true, code: true, name: true } },
+            },
+          },
+          inventoryReservations: {
+            select: {
+              id: true,
+              status: true,
+              quantity: true,
             },
           },
         },
@@ -757,11 +862,14 @@ export class OrderService {
 
       let stockReleased = false;
 
-      // Handle uncommitted reservations (RESERVED, PAYMENT_PENDING)
+      // Handle active reservations across all pre-dispatch statuses
+      // (RESERVED, PAYMENT_PENDING, PENDING, CONFIRMED, PROCESSING)
       if (
         order.status === OrderStatus.RESERVED ||
         order.status === OrderStatus.PAYMENT_PENDING ||
-        order.status === OrderStatus.PENDING
+        order.status === OrderStatus.PENDING ||
+        order.status === OrderStatus.CONFIRMED ||
+        order.status === OrderStatus.PROCESSING
       ) {
         for (const res of order.inventoryReservations) {
           if (res.status === ReservationStatus.ACTIVE) {
@@ -789,45 +897,12 @@ export class OrderService {
                 quantityDelta: res.quantity,
                 movementType: MovementType.RESERVATION_RELEASE,
                 referenceId: order.id,
-                notes: `Order cancelled. Released ${res.quantity} reserved unit(s). Reason: ${reason || 'Customer requested cancellation'}`,
+                notes: `Order cancelled in ${order.status} status. Released ${res.quantity} reserved unit(s). Reason: ${reason || 'Customer requested cancellation'}`,
               },
             });
 
             stockReleased = true;
           }
-        }
-      } else if (order.status === OrderStatus.CONFIRMED) {
-        // Order was already confirmed: physical stock was deducted from on_hand!
-        // We restock physical quantity back to quantity_on_hand.
-        for (const item of order.orderItems) {
-          await tx.$executeRaw`
-            SELECT id FROM inventory WHERE product_id = ${item.productId}::uuid AND warehouse_id = ${item.warehouseId}::uuid FOR UPDATE
-          `;
-
-          await tx.inventory.update({
-            where: {
-              productId_warehouseId: {
-                productId: item.productId,
-                warehouseId: item.warehouseId,
-              },
-            },
-            data: {
-              quantityOnHand: { increment: item.quantity },
-            },
-          });
-
-          await tx.inventoryMovement.create({
-            data: {
-              productId: item.productId,
-              warehouseId: item.warehouseId,
-              quantityDelta: item.quantity,
-              movementType: MovementType.RESTOCK,
-              referenceId: order.id,
-              notes: `Order cancellation restock. Returned ${item.quantity} unit(s) to physical stock. Reason: ${reason || 'Customer cancellation'}`,
-            },
-          });
-
-          stockReleased = true;
         }
       }
 
@@ -1060,6 +1135,402 @@ export class OrderService {
         ...updatedOrder,
         items: newItems,
         reservations: newReservations,
+      };
+    });
+  }
+
+  /**
+   * Moves a confirmed order into PROCESSING.
+   * Allowed roles: ADMIN, WAREHOUSE_MANAGER, WAREHOUSE_STAFF (assigned to fulfilling facilities).
+   * Safe against repeated idempotent requests.
+   */
+  public async processOrder(
+    orderId: string,
+    user: { userId: string; role: UserRole },
+    _options?: { notes?: string }
+  ) {
+    if (user.role === UserRole.CUSTOMER) {
+      throw new ForbiddenError('Customers cannot process orders for fulfillment');
+    }
+
+    return prisma.$transaction(async (tx) => {
+      // Row lock on order
+      await tx.$executeRaw`
+        SELECT id FROM orders WHERE id = ${orderId}::uuid FOR UPDATE
+      `;
+
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        include: {
+          orderItems: true,
+          inventoryReservations: true,
+        },
+      });
+
+      if (!order) {
+        throw new NotFoundError(`Order with ID '${orderId}' not found`);
+      }
+
+      // Warehouse authorization check for warehouse managers and staff
+      if (user.role === UserRole.WAREHOUSE_MANAGER || user.role === UserRole.WAREHOUSE_STAFF) {
+        const accessibleIds = await warehouseAccessService.getAccessibleWarehouseIds(user.userId, user.role);
+        const orderWarehouseIds = [...new Set(order.orderItems.map((item) => item.warehouseId))];
+        const isAssigned = orderWarehouseIds.some((whId) => (accessibleIds as string[]).includes(whId));
+        if (!isAssigned) {
+          throw new ForbiddenError(
+            'Access denied: You are not assigned to any warehouse fulfilling this order',
+            'FORBIDDEN_WAREHOUSE_ACCESS'
+          );
+        }
+      }
+
+      // Idempotency: safe against repeated requests
+      if (order.status === OrderStatus.PROCESSING) {
+        return {
+          orderId: order.id,
+          orderNumber: order.orderNumber,
+          status: order.status,
+          message: 'Order is already in PROCESSING status.',
+        };
+      }
+
+      if (order.status !== OrderStatus.CONFIRMED) {
+        throw new UnprocessableEntityError(
+          `Cannot process order in '${order.status}' status. Only CONFIRMED orders can be moved to PROCESSING.`
+        );
+      }
+
+      // Verify active reservations exist
+      const activeReservations = order.inventoryReservations.filter((r) => r.status === ReservationStatus.ACTIVE);
+      if (activeReservations.length === 0) {
+        throw new ConflictError('Cannot process order: No active reservations found for this order');
+      }
+
+      const updated = await tx.order.update({
+        where: { id: orderId },
+        data: { status: OrderStatus.PROCESSING },
+      });
+
+      // Record Transactional Outbox Event
+      await outboxService.recordEvent(tx, {
+        aggregateType: 'Order',
+        aggregateId: order.id,
+        eventType: EVENT_TYPES.ORDER_PROCESSING_STARTED,
+        payload: {
+          orderId: order.id,
+          orderNumber: order.orderNumber,
+          status: OrderStatus.PROCESSING,
+          processedBy: user.userId,
+          processedAt: new Date().toISOString(),
+        },
+      });
+
+      return {
+        orderId: updated.id,
+        orderNumber: updated.orderNumber,
+        status: updated.status,
+        message: 'Order moved to PROCESSING status. Warehouse picking and packing initiated.',
+      };
+    });
+  }
+
+  /**
+   * Dispatches an order from warehouse facilities:
+   * 1. Verifies order is PROCESSING.
+   * 2. Verifies requesting user has access to every affected warehouse.
+   * 3. Verifies active reservations.
+   * 4. Acquires canonical row locks (SELECT ... FOR UPDATE) on affected inventory.
+   * 5. Verifies physical stock and reserved balances.
+   * 6. Deducts physical stock (quantityOnHand) and releases quantityReserved.
+   * 7. Marks reservations as COMMITTED.
+   * 8. Records DISPATCH inventory movement.
+   * 9. Updates order status to SHIPPED.
+   * 10. Emits order.shipped outbox event.
+   */
+  public async dispatchOrder(
+    orderId: string,
+    user: { userId: string; role: UserRole },
+    options?: { warehouseId?: string; trackingNumber?: string; notes?: string }
+  ) {
+    if (user.role === UserRole.CUSTOMER) {
+      throw new ForbiddenError('Customers cannot dispatch orders');
+    }
+
+    return prisma.$transaction(async (tx) => {
+      // Row lock on order
+      await tx.$executeRaw`
+        SELECT id FROM orders WHERE id = ${orderId}::uuid FOR UPDATE
+      `;
+
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        include: {
+          orderItems: true,
+          inventoryReservations: {
+            include: {
+              inventory: {
+                include: {
+                  warehouse: true,
+                  product: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (!order) {
+        throw new NotFoundError(`Order with ID '${orderId}' not found`);
+      }
+
+      // Idempotency: safe against repeated requests
+      if (order.status === OrderStatus.SHIPPED || order.status === OrderStatus.DELIVERED) {
+        return {
+          orderId: order.id,
+          orderNumber: order.orderNumber,
+          status: order.status,
+          message: `Order has already been dispatched (Status: ${order.status}).`,
+        };
+      }
+
+      if (order.status !== OrderStatus.PROCESSING) {
+        throw new UnprocessableEntityError(
+          `Cannot dispatch order in '${order.status}' status. Order must be in PROCESSING status to be dispatched.`
+        );
+      }
+
+      // Filter active reservations to dispatch
+      let activeReservations = order.inventoryReservations.filter((r) => r.status === ReservationStatus.ACTIVE);
+
+      if (options?.warehouseId) {
+        activeReservations = activeReservations.filter(
+          (r) => r.inventory.warehouseId === options.warehouseId
+        );
+      }
+
+      if (activeReservations.length === 0) {
+        // Check if reservations were released or expired
+        const nonActive = order.inventoryReservations.filter(
+          (r) => r.status === ReservationStatus.EXPIRED || r.status === ReservationStatus.RELEASED
+        );
+        if (nonActive.length > 0) {
+          throw new ConflictError(
+            'Cannot dispatch order: inventory reservations have expired or been released'
+          );
+        }
+        throw new ConflictError('Cannot dispatch order: no active reservations available to dispatch');
+      }
+
+      // Multi-Warehouse Permissions Verification:
+      // Verify user has authorized access to EVERY warehouse being dispatched
+      if (user.role === UserRole.WAREHOUSE_MANAGER || user.role === UserRole.WAREHOUSE_STAFF) {
+        const accessibleIds = await warehouseAccessService.getAccessibleWarehouseIds(user.userId, user.role);
+        const assignedIds = Array.isArray(accessibleIds) ? accessibleIds : [];
+
+        const requiredWarehouseIds = [
+          ...new Set(activeReservations.map((r) => r.inventory.warehouseId)),
+        ];
+        const unauthorizedWarehouses = requiredWarehouseIds.filter((id) => !assignedIds.includes(id));
+
+        if (unauthorizedWarehouses.length > 0) {
+          throw new ForbiddenError(
+            `Access denied: You do not have permission to dispatch stock from warehouse '${unauthorizedWarehouses[0]}'`,
+            'FORBIDDEN_WAREHOUSE_ACCESS'
+          );
+        }
+      }
+
+      // Canonical Row-Level Locking on affected inventory records
+      const inventoryIds = [...new Set(activeReservations.map((r) => r.inventoryId))].sort();
+
+      const lockedRows: Array<{
+        id: string;
+        product_id: string;
+        warehouse_id: string;
+        quantity_on_hand: number;
+        quantity_reserved: number;
+      }> = await tx.$queryRaw`
+        SELECT id, product_id, warehouse_id, quantity_on_hand, quantity_reserved
+        FROM inventory
+        WHERE id = ANY(${inventoryIds}::uuid[])
+        ORDER BY id ASC
+        FOR UPDATE
+      `;
+
+      const lockedMap = new Map(lockedRows.map((r) => [r.id, r]));
+
+      // Verify physical stock and reserved balances under lock
+      for (const res of activeReservations) {
+        const locked = lockedMap.get(res.inventoryId);
+        if (!locked) {
+          throw new ConflictError(`Inventory record '${res.inventoryId}' not found under lock`);
+        }
+        if (locked.quantity_on_hand < res.quantity) {
+          throw new ConflictError(
+            `Insufficient physical stock on hand at warehouse '${res.inventory.warehouse.name}' to dispatch order. Required: ${res.quantity}, On-hand: ${locked.quantity_on_hand}`
+          );
+        }
+        if (locked.quantity_reserved < res.quantity) {
+          throw new ConflictError(
+            `Insufficient reserved balance at warehouse '${res.inventory.warehouse.name}' to dispatch order. Required: ${res.quantity}, Reserved: ${locked.quantity_reserved}`
+          );
+        }
+      }
+
+      // Atomically deduct physical stock, release reservation quantity, mark COMMITTED, and record DISPATCH movement
+      for (const res of activeReservations) {
+        await tx.inventory.update({
+          where: { id: res.inventoryId },
+          data: {
+            quantityOnHand: { decrement: res.quantity },
+            quantityReserved: { decrement: res.quantity },
+          },
+        });
+
+        await tx.inventoryReservation.update({
+          where: { id: res.id },
+          data: { status: ReservationStatus.COMMITTED },
+        });
+
+        await tx.inventoryMovement.create({
+          data: {
+            productId: res.inventory.productId,
+            warehouseId: res.inventory.warehouseId,
+            quantityDelta: -res.quantity,
+            movementType: MovementType.DISPATCH,
+            referenceId: order.id,
+            notes: `Physical dispatch: Order '${order.orderNumber}' dispatched ${res.quantity} unit(s) from warehouse '${res.inventory.warehouse.name}'. Dispatched by user ${user.userId}.${options?.trackingNumber ? ` Tracking: ${options.trackingNumber}` : ''}`,
+          },
+        });
+      }
+
+      // Transition order to SHIPPED
+      const updatedOrder = await tx.order.update({
+        where: { id: orderId },
+        data: { status: OrderStatus.SHIPPED },
+      });
+
+      // Record Transactional Outbox Event for Order Dispatched
+      await outboxService.recordEvent(tx, {
+        aggregateType: 'Order',
+        aggregateId: order.id,
+        eventType: EVENT_TYPES.ORDER_SHIPPED,
+        payload: {
+          orderId: order.id,
+          orderNumber: order.orderNumber,
+          status: OrderStatus.SHIPPED,
+          dispatchedBy: user.userId,
+          dispatchedAt: new Date().toISOString(),
+          trackingNumber: options?.trackingNumber || null,
+          items: activeReservations.map((r) => ({
+            productId: r.inventory.productId,
+            warehouseId: r.inventory.warehouseId,
+            quantity: r.quantity,
+          })),
+        },
+      });
+
+      // Evaluate stock thresholds after physical deduction
+      for (const res of activeReservations) {
+        await thresholdEvaluationService.evaluateStockAfterChange(
+          res.inventory.productId,
+          res.inventory.warehouseId
+        );
+      }
+
+      return {
+        orderId: updatedOrder.id,
+        orderNumber: updatedOrder.orderNumber,
+        status: updatedOrder.status,
+        message: 'Order successfully dispatched. Physical stock deducted and reservations committed.',
+      };
+    });
+  }
+
+  /**
+   * Marks a SHIPPED order as DELIVERED.
+   * Allowed roles: ADMIN, WAREHOUSE_MANAGER, WAREHOUSE_STAFF.
+   * Safe against repeated idempotent requests.
+   */
+  public async deliverOrder(
+    orderId: string,
+    user: { userId: string; role: UserRole },
+    options?: { notes?: string; deliveryNotes?: string; deliveredAt?: string }
+  ) {
+    if (user.role === UserRole.CUSTOMER) {
+      throw new ForbiddenError('Customers cannot mark orders as delivered');
+    }
+
+    return prisma.$transaction(async (tx) => {
+      // Row lock on order
+      await tx.$executeRaw`
+        SELECT id FROM orders WHERE id = ${orderId}::uuid FOR UPDATE
+      `;
+
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        include: { orderItems: true },
+      });
+
+      if (!order) {
+        throw new NotFoundError(`Order with ID '${orderId}' not found`);
+      }
+
+      // Warehouse authorization check
+      if (user.role === UserRole.WAREHOUSE_MANAGER || user.role === UserRole.WAREHOUSE_STAFF) {
+        const accessibleIds = await warehouseAccessService.getAccessibleWarehouseIds(user.userId, user.role);
+        const orderWarehouseIds = [...new Set(order.orderItems.map((item) => item.warehouseId))];
+        const isAssigned = orderWarehouseIds.some((whId) => (accessibleIds as string[]).includes(whId));
+        if (!isAssigned) {
+          throw new ForbiddenError(
+            'Access denied: You are not assigned to any warehouse fulfilling this order',
+            'FORBIDDEN_WAREHOUSE_ACCESS'
+          );
+        }
+      }
+
+      // Idempotency: safe against repeated requests
+      if (order.status === OrderStatus.DELIVERED) {
+        return {
+          orderId: order.id,
+          orderNumber: order.orderNumber,
+          status: order.status,
+          message: 'Order has already been marked as DELIVERED.',
+        };
+      }
+
+      if (order.status !== OrderStatus.SHIPPED) {
+        throw new UnprocessableEntityError(
+          `Cannot deliver order in '${order.status}' status. Order must be in SHIPPED status to be delivered.`
+        );
+      }
+
+      const updated = await tx.order.update({
+        where: { id: orderId },
+        data: { status: OrderStatus.DELIVERED },
+      });
+
+      // Record Transactional Outbox Event for Delivery
+      await outboxService.recordEvent(tx, {
+        aggregateType: 'Order',
+        aggregateId: order.id,
+        eventType: EVENT_TYPES.ORDER_DELIVERED,
+        payload: {
+          orderId: order.id,
+          orderNumber: order.orderNumber,
+          status: OrderStatus.DELIVERED,
+          deliveredBy: user.userId,
+          deliveredAt: options?.deliveredAt || new Date().toISOString(),
+          deliveryNotes: options?.deliveryNotes || options?.notes || null,
+          notes: options?.notes || options?.deliveryNotes || null,
+        },
+      });
+
+      return {
+        orderId: updated.id,
+        orderNumber: updated.orderNumber,
+        status: updated.status,
+        message: 'Order successfully marked as DELIVERED.',
       };
     });
   }

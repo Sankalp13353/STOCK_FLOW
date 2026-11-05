@@ -1,12 +1,16 @@
 import { Router } from 'express';
 import { orderController } from './order.controller';
-import { authenticate } from '../../common/middlewares/auth';
+import { authenticate, authorize } from '../../common/middlewares/auth';
 import { validate } from '../../common/middlewares/validate';
+import { UserRole } from '@prisma/client';
 import {
   cancelOrderSchema,
   createOrderSchema,
+  deliverOrderSchema,
+  dispatchOrderSchema,
   listOrdersQuerySchema,
   orderIdParamSchema,
+  processOrderSchema,
 } from './order.schemas';
 
 const router = Router();
@@ -29,6 +33,33 @@ router.post(
   authenticate,
   validate({ params: orderIdParamSchema, body: cancelOrderSchema }),
   orderController.cancel
+);
+
+// Fulfilment lifecycle: transition to PROCESSING
+router.post(
+  '/:id/process',
+  authenticate,
+  authorize(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF),
+  validate({ params: orderIdParamSchema, body: processOrderSchema }),
+  orderController.process
+);
+
+// Fulfilment lifecycle: DISPATCH order and deduct physical stock
+router.post(
+  '/:id/dispatch',
+  authenticate,
+  authorize(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF),
+  validate({ params: orderIdParamSchema, body: dispatchOrderSchema }),
+  orderController.dispatch
+);
+
+// Fulfilment lifecycle: mark as DELIVERED
+router.post(
+  '/:id/deliver',
+  authenticate,
+  authorize(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF),
+  validate({ params: orderIdParamSchema, body: deliverOrderSchema }),
+  orderController.deliver
 );
 
 export const orderRouter = router;

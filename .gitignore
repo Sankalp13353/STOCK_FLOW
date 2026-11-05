@@ -1,5 +1,8 @@
 node_modules/
 dist/
 .env
+.env*.local
 *.log
+*.pem
+prisma/pre_migration_phase7b_backup.sql
 

@@ -9,6 +9,11 @@ import {
   CreateThresholdPayload,
   UpdateThresholdPayload,
   LowStockEvaluationItem,
+  MovementsQueryParams,
+  PaginatedMovementsResponse,
+  ReservationsQueryParams,
+  PaginatedReservationsResponse,
+  InventoryMetricsSummary,
 } from '../types/inventory';
 
 export async function fetchWarehouseInventory(
@@ -23,10 +28,41 @@ export async function fetchWarehouseInventory(
 export async function fetchInventory(query?: {
   warehouseId?: string;
   productId?: string;
+  search?: string;
+  lowStockOnly?: string;
 }): Promise<WarehouseInventoryItem[]> {
   const response = await apiClient.get<ApiResponse<WarehouseInventoryItem[]>>('/inventory', {
     params: query,
   });
+  return response.data.data;
+}
+
+export async function fetchInventoryMetrics(
+  warehouseId?: string
+): Promise<InventoryMetricsSummary> {
+  const response = await apiClient.get<ApiResponse<InventoryMetricsSummary>>('/inventory/metrics', {
+    params: warehouseId ? { warehouseId } : undefined,
+  });
+  return response.data.data;
+}
+
+export async function fetchInventoryMovements(
+  params?: MovementsQueryParams
+): Promise<PaginatedMovementsResponse> {
+  const response = await apiClient.get<ApiResponse<PaginatedMovementsResponse>>(
+    '/inventory/movements',
+    { params }
+  );
+  return response.data.data;
+}
+
+export async function fetchInventoryReservations(
+  params?: ReservationsQueryParams
+): Promise<PaginatedReservationsResponse> {
+  const response = await apiClient.get<ApiResponse<PaginatedReservationsResponse>>(
+    '/inventory/reservations',
+    { params }
+  );
   return response.data.data;
 }
 
@@ -35,6 +71,8 @@ export async function restockInventory(input: RestockInput): Promise<RestockResu
     productId: input.productId,
     warehouseId: input.warehouseId,
     quantity: input.quantity,
+    supplier: input.supplier?.trim() || undefined,
+    referenceId: input.referenceId?.trim() || undefined,
     notes: input.notes?.trim() || undefined,
   });
   return response.data.data;
@@ -98,5 +136,3 @@ export async function fetchLowStockEvaluations(
   );
   return response.data.data ?? [];
 }
-
-

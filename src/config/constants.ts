@@ -18,6 +18,9 @@ export const EVENT_TYPES = {
   ORDER_CANCELLED: 'order.cancelled',
   ORDER_PAYMENT_FAILED: 'order.payment_failed',
   ORDER_RESERVATION_EXPIRED: 'order.reservation_expired',
+  ORDER_PROCESSING_STARTED: 'order.processing_started',
+  ORDER_SHIPPED: 'order.shipped',
+  ORDER_DELIVERED: 'order.delivered',
 } as const;
 
 export const BROKER_TOPICS = {

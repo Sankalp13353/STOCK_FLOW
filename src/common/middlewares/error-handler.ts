@@ -39,18 +39,51 @@ export function errorHandler(
       return;
     }
     if (err.code === 'P2003') {
-      sendError(res, 400, 'FOREIGN_KEY_VIOLATION', 'Related record does not exist');
+      sendError(
+        res,
+        409,
+        'FOREIGN_KEY_VIOLATION',
+        'Operation violates referential integrity constraints. The record is either referenced by other entities or the referenced entity does not exist.'
+      );
+      return;
+    }
+    if (err.code === 'P2014') {
+      sendError(
+        res,
+        409,
+        'FOREIGN_KEY_VIOLATION',
+        'The change you are trying to make would violate the required relation between records.'
+      );
       return;
     }
   }
 
-  // 4. Malformed JSON Body
+  // 4. PostgreSQL / Driver Connector Restrict & Foreign Key Violations (e.g. Postgres 23001, 23503)
+  const errMsg = err.message || '';
+  if (
+    errMsg.includes('violates RESTRICT setting of foreign key constraint') ||
+    errMsg.includes('violates foreign key constraint') ||
+    errMsg.includes('code: "23001"') ||
+    errMsg.includes('code: "23503"') ||
+    errMsg.includes('code: 23001') ||
+    errMsg.includes('code: 23503')
+  ) {
+    sendError(
+      res,
+      409,
+      'FOREIGN_KEY_VIOLATION',
+      'Cannot perform operation because this record is referenced by other database records (such as inventory, movements, or orders). Please deactivate or archive it instead.'
+    );
+    return;
+  }
+
+  // 5. Malformed JSON Body
   if (err instanceof SyntaxError && 'body' in err) {
     sendError(res, 400, 'INVALID_JSON', 'Malformed JSON in request body');
     return;
   }
 
-  // 5. Fallback Internal Server Error
+  // 6. Fallback Internal Server Error
   if (env.NODE_ENV !== 'test') {
     console.error('Unhandled Server Error:', err);
   }

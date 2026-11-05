@@ -28,6 +28,17 @@ const server = app.listen(env.PORT, '0.0.0.0', async () => {
   }
 });
 
+server.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`❌ [Server] Port ${env.PORT} is already in use.`);
+    console.error(`   If the Docker container is running, stop it with: docker stop stockflow-api`);
+    console.error(`   Or find and terminate the process: lsof -ti :${env.PORT} | xargs kill -9`);
+    process.exit(1);
+  }
+  console.error('❌ [Server] Fatal startup error:', err);
+  process.exit(1);
+});
+
 const gracefulShutdown = async (signal: string) => {
   console.log(`\n🛑 Received ${signal}. Initiating graceful shutdown of API server...`);
 

@@ -59,7 +59,7 @@ export function LoginForm() {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <form noValidate onSubmit={handleSubmit} className="space-y-4">
       {serverError && (
         <ErrorMessage
           title="Authentication Failed"

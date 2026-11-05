@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
@@ -11,6 +11,8 @@ import {
   ShoppingCart,
   Clock,
   ArrowRight,
+  Filter,
+  Calendar,
 } from 'lucide-react';
 import { PageHeader } from '../components/layout/PageHeader';
 import { Button } from '../components/ui/Button';
@@ -19,20 +21,20 @@ import { EmptyState } from '../components/ui/EmptyState';
 import { useAuth } from '../hooks/useAuth';
 import { useCart } from '../context/CartContext';
 import { fetchWarehouses } from '../api/warehouses';
-import {
-  fetchWarehouseInventory,
-  fetchInventory,
-  expireReservations,
-} from '../api/inventory';
 import { fetchRecentOrders } from '../api/dashboard';
-import { WarehouseSelector } from '../features/dashboard/WarehouseSelector';
-import { SelectedWarehouseOverview } from '../features/dashboard/SelectedWarehouseOverview';
-import { MultiWarehouseOverview } from '../features/dashboard/MultiWarehouseOverview';
+import { fetchDashboardOverview } from '../api/analytics';
 import { RestockModal } from '../features/inventory/RestockModal';
 import { ThresholdManagementModal } from '../features/inventory/ThresholdManagementModal';
 import { RecentOrdersList } from '../features/dashboard/RecentOrdersList';
 import { StatCard } from '../features/dashboard/StatCard';
+import { DashboardKpiRibbon } from '../features/dashboard/DashboardKpiRibbon';
+import { OperationalAlertsSection } from '../features/dashboard/OperationalAlertsSection';
+import { MovementTrendsChart } from '../features/dashboard/MovementTrendsChart';
+import { OrderAnalyticsCharts } from '../features/dashboard/OrderAnalyticsCharts';
+import { WarehousePerformanceTable } from '../features/dashboard/WarehousePerformanceTable';
+import { TopShortagesTable } from '../features/dashboard/TopShortagesTable';
 import { Warehouse, RestockResult } from '../types';
+import { TimeRange } from '../types/analytics';
 
 export function DashboardPage() {
   const { user } = useAuth();
@@ -42,12 +44,13 @@ export function DashboardPage() {
   const isCustomer = user?.role === 'CUSTOMER';
   const isAdmin = user?.role === 'ADMIN';
   const isManager = user?.role === 'WAREHOUSE_MANAGER';
+  const isStaff = user?.role === 'WAREHOUSE_STAFF';
 
-  // State for active warehouse selection
+  // State for active filters
   const [selectedWarehouseId, setSelectedWarehouseId] = useState<string | null>(null);
+  const [timeRange, setTimeRange] = useState<TimeRange>('7d');
   const [isRestockOpen, setIsRestockOpen] = useState(false);
   const [isThresholdModalOpen, setIsThresholdModalOpen] = useState(false);
-  const [isExpiringReservations, setIsExpiringReservations] = useState(false);
   const [notification, setNotification] = useState<{
     type: 'success' | 'warning' | 'info';
     message: string;
@@ -74,7 +77,7 @@ export function DashboardPage() {
     staleTime: 30 * 1000,
   });
 
-  // Automatically maintain selected warehouse & handle access revocation
+  // Verify currently selected warehouse is still among assigned warehouses
   useEffect(() => {
     if (!warehouses || warehouses.length === 0) {
       if (selectedWarehouseId !== null) {
@@ -83,84 +86,37 @@ export function DashboardPage() {
       return;
     }
 
-    // If currently selected warehouse is no longer present in assigned warehouses
-    const stillAssigned = warehouses.some((w) => w.id === selectedWarehouseId);
-    if (!stillAssigned) {
-      const fallback = warehouses[0].id;
-      if (selectedWarehouseId !== null) {
-        // Selection was previously pointing to a revoked warehouse
+    if (selectedWarehouseId !== null) {
+      const stillAssigned = warehouses.some((w) => w.id === selectedWarehouseId);
+      if (!stillAssigned) {
+        setSelectedWarehouseId(null);
         showToast(
-          'Your previously selected warehouse assignment was updated or revoked. Switched to another assigned facility.',
+          'Your previously selected warehouse assignment was revoked or updated. Scope reset to all assigned facilities.',
           'warning'
         );
       }
-      setSelectedWarehouseId(fallback);
     }
-
-    // Evict cached inventory data for any facility that is no longer in user's active assignments
-    const assignedIdSet = new Set(warehouses.map((w) => w.id));
-    queryClient.removeQueries({
-      predicate: (query) => {
-        const queryKey = query.queryKey;
-        if (queryKey[0] === 'warehouse-inventory' && typeof queryKey[1] === 'string') {
-          return !assignedIdSet.has(queryKey[1]);
-        }
-        return false;
-      },
-    });
   }, [warehouses, selectedWarehouseId]);
 
-  // Active warehouse object
-  const activeWarehouse = useMemo(() => {
-    if (!selectedWarehouseId) return null;
-    return warehouses.find((w) => w.id === selectedWarehouseId) || null;
-  }, [warehouses, selectedWarehouseId]);
-
-  // 2. Fetch inventory for currently selected warehouse
+  // 2. Fetch comprehensive operational dashboard analytics from backend
   const {
-    data: warehouseInventory = [],
-    isLoading: isLoadingInventory,
-    error: inventoryError,
-    refetch: refetchInventory,
+    data: dashboardData,
+    isLoading: isLoadingDashboard,
+    error: dashboardError,
+    refetch: refetchDashboard,
+    isFetching: isFetchingDashboard,
   } = useQuery({
-    queryKey: ['warehouse-inventory', selectedWarehouseId],
-    queryFn: () => fetchWarehouseInventory(selectedWarehouseId!),
-    enabled: Boolean(!isCustomer && selectedWarehouseId),
+    queryKey: ['operational-dashboard', selectedWarehouseId, timeRange],
+    queryFn: () =>
+      fetchDashboardOverview({
+        warehouseId: selectedWarehouseId || undefined,
+        timeRange,
+      }),
+    enabled: Boolean(!isCustomer && warehouses.length > 0),
     staleTime: 15 * 1000,
-    retry: 1,
   });
 
-  // Handle immediate 403 access revocation for the selected warehouse
-  useEffect(() => {
-    if (inventoryError) {
-      const status = (inventoryError as any)?.status;
-      if (status === 403 && selectedWarehouseId) {
-        // Clear cached data for revoked warehouse
-        queryClient.removeQueries({ queryKey: ['warehouse-inventory', selectedWarehouseId] });
-        showToast(
-          'Access to this warehouse was revoked by an administrator. Refreshing assigned facilities...',
-          'warning'
-        );
-        // Immediately refresh user's assigned warehouse list
-        refetchWarehouses();
-      }
-    }
-  }, [inventoryError, selectedWarehouseId, queryClient, refetchWarehouses]);
-
-  // 3. For ADMIN & WAREHOUSE_MANAGER: Fetch multi-warehouse overview inventory across all assigned facilities
-  const isManagerOrAdmin = isAdmin || isManager;
-  const {
-    data: allInventory = [],
-    isLoading: isLoadingAllInventory,
-    refetch: refetchAllInventory,
-  } = useQuery({
-    queryKey: ['all-assigned-inventory'],
-    queryFn: () => fetchInventory(),
-    enabled: Boolean(!isCustomer && isManagerOrAdmin && warehouses.length > 0),
-    staleTime: 30 * 1000,
-  });
-
-  // 4. For CUSTOMER: fetch customer's recent orders only
+  // 3. For CUSTOMER: fetch customer's recent orders only
   const {
     data: customerOrders = [],
     isLoading: isLoadingCustomerOrders,
@@ -174,30 +130,12 @@ export function DashboardPage() {
 
   // Restock success handler
   function handleRestockSuccess(result: RestockResult) {
-    queryClient.invalidateQueries({ queryKey: ['warehouse-inventory', selectedWarehouseId] });
-    queryClient.invalidateQueries({ queryKey: ['all-assigned-inventory'] });
-    queryClient.invalidateQueries({ queryKey: ['dashboard-data'] });
+    queryClient.invalidateQueries({ queryKey: ['operational-dashboard'] });
+    queryClient.invalidateQueries({ queryKey: ['warehouse-inventory'] });
+    queryClient.invalidateQueries({ queryKey: ['inventory-overview'] });
     showToast(
       `Stock updated successfully! Available quantity is now ${result.quantityAvailable} units.`
     );
-  }
-
-  // Sweep stale reservations handler (ADMIN & WAREHOUSE_MANAGER)
-  async function handleExpireReservations() {
-    setIsExpiringReservations(true);
-    try {
-      const res = await expireReservations();
-      queryClient.invalidateQueries({ queryKey: ['warehouse-inventory'] });
-      queryClient.invalidateQueries({ queryKey: ['all-assigned-inventory'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard-data'] });
-      showToast(
-        `Reservation sweep completed: ${res.expiredCount} expired reservations swept, ${res.restockedCount} units restocked into available inventory.`
-      );
-    } catch (err: any) {
-      showToast(err.message || 'Failed to expire reservations.', 'warning');
-    } finally {
-      setIsExpiringReservations(false);
-    }
   }
 
   // Refresh all dashboard queries
@@ -206,22 +144,19 @@ export function DashboardPage() {
       refetchCustomerOrders();
     } else {
       refetchWarehouses();
-      if (selectedWarehouseId) {
-        refetchInventory();
-      }
-      if (isManagerOrAdmin) {
-        refetchAllInventory();
-      }
+      refetchDashboard();
     }
   }
 
   // ==========================================
-  // CUSTOMER VIEW: Customer Portal Only
+  // CUSTOMER VIEW: Customer Wholesale Portal
   // ==========================================
   if (isCustomer) {
     const totalOrders = customerOrders.length;
     const activeOrders = customerOrders.filter((o) =>
-      ['PENDING', 'RESERVED', 'PAYMENT_PENDING', 'CONFIRMED', 'PROCESSING', 'SHIPPED'].includes(o.status)
+      ['PENDING', 'RESERVED', 'PAYMENT_PENDING', 'CONFIRMED', 'PROCESSING', 'SHIPPED'].includes(
+        o.status
+      )
     ).length;
     const completedOrders = customerOrders.filter((o) => o.status === 'DELIVERED').length;
 
@@ -354,46 +289,100 @@ export function DashboardPage() {
   }
 
   // ==========================================
-  // INTERNAL OPERATIONS / WAREHOUSE VIEW
+  // OPERATIONAL COMMAND CENTRE
   // (ADMIN, WAREHOUSE_MANAGER, WAREHOUSE_STAFF)
   // ==========================================
+  const activeWarehouse = warehouses.find((w) => w.id === selectedWarehouseId);
+
   return (
     <div className="space-y-6">
       {/* Page Header */}
       <PageHeader
         title={
           isAdmin
-            ? 'Enterprise Warehouse Operations'
+            ? 'Enterprise Operational Command Centre'
             : isManager
-            ? 'Warehouse Management Dashboard'
-            : 'Warehouse Operational Terminal'
+            ? 'Warehouse Management Command Centre'
+            : 'Operational Terminal & Workload Center'
         }
         description={
           isAdmin
-            ? 'Organization-wide facility distribution metrics, multi-warehouse oversight, and inventory allocations.'
+            ? 'Organization-wide real-time operational metrics, multi-warehouse workload, inventory flow, and bottleneck indicators.'
             : isManager
-            ? 'Dynamic operational oversight of all your assigned fulfillment facilities and inventory allocations.'
-            : 'Real-time stock ledger and operational terminal for your assigned fulfillment facilities.'
+            ? 'Real-time operational metrics and fulfilment velocity for your assigned warehouse facilities.'
+            : 'Live operational workload, dispatch queues, and stock alerts for your assigned facilities.'
         }
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Time Filter Dropdown / Buttons */}
+            <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 shadow-2xs">
+              {(
+                [
+                  { id: 'today', label: 'Today' },
+                  { id: '7d', label: '7 Days' },
+                  { id: '30d', label: '30 Days' },
+                  { id: '90d', label: '90 Days' },
+                ] as const
+              ).map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setTimeRange(tab.id)}
+                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+                    timeRange === tab.id
+                      ? 'bg-brand-600 text-white font-semibold shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Warehouse Scope Selector */}
+            <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-lg px-2.5 py-1 shadow-2xs">
+              <Filter className="w-3.5 h-3.5 text-slate-400" />
+              <select
+                value={selectedWarehouseId || ''}
+                onChange={(e) => setSelectedWarehouseId(e.target.value || null)}
+                className="text-xs font-medium text-slate-700 bg-transparent border-none focus:outline-hidden cursor-pointer"
+                aria-label="Filter by warehouse"
+              >
+                <option value="">
+                  {isAdmin
+                    ? 'All Facilities (Enterprise)'
+                    : `All Assigned Facilities (${warehouses.length})`}
+                </option>
+                {warehouses.map((wh) => (
+                  <option key={wh.id} value={wh.id}>
+                    {wh.code} — {wh.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <Button
               size="sm"
               variant="outline"
               onClick={handleGlobalRefresh}
-              isLoading={isFetchingWarehouses}
-              leftIcon={<RefreshCw className={`w-3.5 h-3.5 ${isFetchingWarehouses ? 'animate-spin' : ''}`} />}
+              isLoading={isFetchingWarehouses || isFetchingDashboard}
+              leftIcon={
+                <RefreshCw
+                  className={`w-3.5 h-3.5 ${
+                    isFetchingWarehouses || isFetchingDashboard ? 'animate-spin' : ''
+                  }`}
+                />
+              }
             >
-              Refresh Dashboard
+              Refresh
             </Button>
           </div>
         }
       />
 
-      {/* Global Notification / Alert Banner */}
+      {/* Global Notification Banner */}
       {notification && (
         <div
-          className={`p-3.5 rounded-xl border flex items-center justify-between text-xs shadow-sm animate-in fade-in duration-200 ${
+          className={`p-3.5 rounded-xl border flex items-center justify-between text-xs shadow-2xs animate-in fade-in duration-200 ${
             notification.type === 'success'
               ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
               : notification.type === 'warning'
@@ -419,7 +408,7 @@ export function DashboardPage() {
         </div>
       )}
 
-      {/* Error state if warehouses failed to load */}
+      {/* Error state if warehouses or dashboard failed */}
       {warehousesError && (
         <ErrorMessage
           title="Failed to Load Assigned Warehouses"
@@ -432,71 +421,110 @@ export function DashboardPage() {
         />
       )}
 
-      {/* Loading Skeletons */}
+      {dashboardError && (
+        <ErrorMessage
+          title="Failed to Load Operational Analytics"
+          message={
+            dashboardError instanceof Error
+              ? dashboardError.message
+              : 'Unable to compute operational metrics from database.'
+          }
+          onRetry={() => refetchDashboard()}
+        />
+      )}
+
+      {/* Loading or Empty Warehouse State */}
       {isLoadingWarehouses ? (
         <div className="space-y-4">
-          <div className="h-16 w-full bg-slate-100 animate-pulse rounded-xl border border-slate-200" />
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {[...Array(4)].map((_, i) => (
-              <div key={i} className="h-28 bg-slate-100 animate-pulse rounded-xl border border-slate-200" />
+          <div className="h-24 w-full bg-slate-100 animate-pulse rounded-xl border border-slate-200" />
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
+            {[...Array(10)].map((_, i) => (
+              <div
+                key={i}
+                className="h-24 bg-slate-100 animate-pulse rounded-xl border border-slate-200"
+              />
             ))}
           </div>
         </div>
       ) : warehouses.length === 0 ? (
-        /* Empty State: Exactly as specified in Section 6 */
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-12 text-center">
+        <div className="bg-white rounded-xl border border-slate-200 shadow-2xs p-12 text-center">
           <EmptyState
             icon={<WarehouseIcon className="w-10 h-10 text-slate-400" />}
-            title="No warehouses assigned yet. Contact your administrator."
-            description="You do not currently have access to any physical fulfillment centers. Once an administrator assigns one or more warehouses to your account, they will automatically appear here."
+            title="No warehouses assigned yet"
+            description="You do not currently have access to any physical fulfillment centers. Once an administrator assigns one or more warehouses to your account, live operational analytics will automatically appear here."
             actionLabel="Check for New Assignments"
             onAction={() => refetchWarehouses()}
           />
         </div>
       ) : (
-        /* Warehouse Operations Interface */
         <div className="space-y-6">
-          {/* Warehouse Selector (Dynamic, Searchable, Scrollable, No fixed limit) */}
-          <div>
-            <WarehouseSelector
-              warehouses={warehouses}
-              selectedWarehouseId={selectedWarehouseId}
-              onSelectWarehouse={(id) => setSelectedWarehouseId(id)}
-              isLoading={isLoadingWarehouses}
-              isAdmin={isAdmin}
+          {/* Active Scope Notice */}
+          <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 bg-slate-50 border border-slate-200/80 rounded-xl text-xs text-slate-600">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-slate-800">Operational Scope:</span>
+              <span className="px-2 py-0.5 rounded-md bg-white border border-slate-200 font-bold text-brand-700">
+                {activeWarehouse
+                  ? `${activeWarehouse.code} — ${activeWarehouse.name}`
+                  : isAdmin
+                  ? 'All Facilities (Enterprise-wide)'
+                  : `All Assigned Facilities (${warehouses.length})`}
+              </span>
+              <span className="text-slate-400">•</span>
+              <span className="text-slate-500 flex items-center gap-1">
+                <Calendar className="w-3.5 h-3.5" />
+                Timeframe: <strong className="text-slate-700 uppercase">{timeRange}</strong>
+              </span>
+            </div>
+
+            {selectedWarehouseId && (
+              <button
+                onClick={() => setSelectedWarehouseId(null)}
+                className="text-brand-600 hover:text-brand-700 font-semibold underline cursor-pointer text-xs"
+              >
+                Reset to All Assigned Facilities
+              </button>
+            )}
+          </div>
+
+          {/* Section 1: Dashboard KPI Cards Ribbon (10 Real Metrics) */}
+          <DashboardKpiRibbon
+            kpis={dashboardData?.kpis}
+            isLoading={isLoadingDashboard || isFetchingDashboard}
+          />
+
+          {/* Section 2: Operational Alerts & Bottlenecks */}
+          <OperationalAlertsSection
+            alerts={dashboardData?.alerts?.alerts || []}
+            isLoading={isLoadingDashboard || isFetchingDashboard}
+          />
+
+          {/* Section 3: Physical Movement Trends & Order Fulfillment Velocity */}
+          <div className="grid grid-cols-1 gap-6">
+            <MovementTrendsChart
+              data={dashboardData?.inventory?.movementTrends || []}
+              isLoading={isLoadingDashboard || isFetchingDashboard}
+            />
+            <OrderAnalyticsCharts
+              analytics={dashboardData?.orders}
+              isLoading={isLoadingDashboard || isFetchingDashboard}
             />
           </div>
 
-          {/* Selected Warehouse Overview */}
-          {activeWarehouse && (
-            <SelectedWarehouseOverview
-              warehouse={activeWarehouse}
-              inventory={warehouseInventory}
-              isLoading={isLoadingInventory}
-              userRole={user?.role}
-              onRefresh={() => refetchInventory()}
-              onOpenRestock={() => setIsRestockOpen(true)}
-              onExpireReservations={handleExpireReservations}
-              isExpiringReservations={isExpiringReservations}
-              onOpenThresholds={() => setIsThresholdModalOpen(true)}
+          {/* Section 4: Multi-Warehouse Performance & Workload Comparison */}
+          {(isAdmin || isManager || (isStaff && warehouses.length > 0)) && (
+            <WarehousePerformanceTable
+              warehouses={dashboardData?.warehouses || []}
+              selectedWarehouseId={selectedWarehouseId}
+              onSelectWarehouse={(id) => setSelectedWarehouseId(id)}
+              isLoading={isLoadingDashboard || isFetchingDashboard}
             />
           )}
 
-          {/* Multi-Warehouse Comparative Overview (For ADMIN and WAREHOUSE_MANAGER) */}
-          {isManagerOrAdmin && warehouses.length > 1 && (
-            <div className="pt-2">
-              <MultiWarehouseOverview
-                warehouses={warehouses}
-                allInventory={allInventory}
-                isLoading={isLoadingAllInventory}
-                selectedWarehouseId={selectedWarehouseId}
-                onSelectWarehouse={(id) => {
-                  setSelectedWarehouseId(id);
-                  window.scrollTo({ top: 0, behavior: 'smooth' });
-                }}
-              />
-            </div>
-          )}
+          {/* Section 5: Priority Shortages & Stock Deficits */}
+          <TopShortagesTable
+            shortages={dashboardData?.inventory?.topShortages || []}
+            isLoading={isLoadingDashboard || isFetchingDashboard}
+          />
         </div>
       )}
 

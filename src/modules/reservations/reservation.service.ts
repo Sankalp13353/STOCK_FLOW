@@ -18,10 +18,15 @@ export class ReservationService {
     return prisma.$transaction(async (tx) => {
       // 1. Fetch active expired reservations using row locking
       // Cast now() to ensure UTC comparison
+      // Only sweep reservations for unpaid orders awaiting customer checkout.
+      // Paid and confirmed orders (CONFIRMED, PROCESSING, SHIPPED) remain reserved for warehouse fulfilment.
       const staleReservations = await tx.inventoryReservation.findMany({
         where: {
           status: ReservationStatus.ACTIVE,
           expiresAt: { lt: new Date() },
+          order: {
+            status: { in: [OrderStatus.RESERVED, OrderStatus.PAYMENT_PENDING] },
+          },
         },
         include: {
           order: true,

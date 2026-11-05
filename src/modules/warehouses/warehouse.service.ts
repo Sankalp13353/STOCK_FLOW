@@ -4,6 +4,12 @@ import { ConflictError, ForbiddenError, NotFoundError } from '../../common/error
 import { CreateWarehouseInput, ListWarehousesQuery } from './warehouse.schemas';
 import { warehouseAccessService } from './warehouse-access.service';
 
+export interface WarehouseDetailsWithTeam extends Warehouse {
+  managers?: any[];
+  staff?: any[];
+  userAssignments?: any[];
+}
+
 export class WarehouseService {
   public async createWarehouse(input: CreateWarehouseInput): Promise<Warehouse> {
     const existing = await prisma.warehouse.findUnique({
@@ -29,9 +35,26 @@ export class WarehouseService {
   public async getWarehouseById(
     id: string,
     user?: { userId: string; role: UserRole }
-  ): Promise<Warehouse> {
+  ): Promise<WarehouseDetailsWithTeam> {
     const warehouse = await prisma.warehouse.findUnique({
       where: { id },
+      include: {
+        userAssignments: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                fullName: true,
+                email: true,
+                role: true,
+                isActive: true,
+                createdAt: true,
+              },
+            },
+          },
+          orderBy: { assignedAt: 'desc' },
+        },
+      },
     });
 
     if (!warehouse) {
@@ -55,7 +78,28 @@ export class WarehouseService {
       await warehouseAccessService.ensureWarehouseAccess(user.userId, user.role, id);
     }
 
-    return warehouse;
+    const assignments = warehouse.userAssignments || [];
+    const managers = assignments
+      .filter((a) => (a.role || a.user.role) === UserRole.WAREHOUSE_MANAGER)
+      .map((a) => ({
+        ...a.user,
+        assignmentId: a.id,
+        assignedAt: a.assignedAt,
+      }));
+
+    const staff = assignments
+      .filter((a) => (a.role || a.user.role) === UserRole.WAREHOUSE_STAFF)
+      .map((a) => ({
+        ...a.user,
+        assignmentId: a.id,
+        assignedAt: a.assignedAt,
+      }));
+
+    return {
+      ...warehouse,
+      managers,
+      staff,
+    };
   }
 
   public async listWarehouses(
@@ -97,5 +141,3 @@ export class WarehouseService {
 }
 
 export const warehouseService = new WarehouseService();
-
-

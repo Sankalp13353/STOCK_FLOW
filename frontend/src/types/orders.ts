@@ -1,4 +1,5 @@
 import { OrderStatus, PaginationMeta } from './index';
+import { InventoryMovementRecord } from './inventory';
 
 export interface OrderItem {
   id: string;
@@ -26,6 +27,7 @@ export interface InventoryReservationInfo {
   status: 'ACTIVE' | 'COMMITTED' | 'RELEASED' | 'EXPIRED';
   quantity: number;
   expiresAt: string;
+  inventoryId?: string;
 }
 
 export interface PaymentRecord {
@@ -38,6 +40,14 @@ export interface PaymentRecord {
   createdAt: string;
 }
 
+
+
+export interface OrderCustomerInfo {
+  id: string;
+  email: string;
+  fullName: string;
+}
+
 export interface Order {
   id: string;
   orderNumber: string;
@@ -48,8 +58,10 @@ export interface Order {
   createdAt: string;
   updatedAt: string;
   orderItems: OrderItem[];
+  user?: OrderCustomerInfo;
   inventoryReservations?: InventoryReservationInfo[];
   payments?: PaymentRecord[];
+  inventoryMovements?: InventoryMovementRecord[];
 }
 
 export interface CreateOrderItemInput {
@@ -68,6 +80,16 @@ export interface PaginatedOrdersResponse {
   pagination: PaginationMeta;
 }
 
+export interface ListOrdersQueryParams {
+  page?: number;
+  limit?: number;
+  status?: OrderStatus | 'ALL';
+  search?: string;
+  warehouseId?: string;
+  startDate?: string;
+  endDate?: string;
+}
+
 export interface ProcessPaymentInput {
   orderId: string;
   amountCents: number;
@@ -79,5 +101,28 @@ export interface PaymentProcessResult {
   payment: PaymentRecord;
   orderId: string;
   orderStatus: OrderStatus;
+  message: string;
+}
+
+export interface ProcessOrderInput {
+  notes?: string;
+}
+
+export interface DispatchOrderInput {
+  warehouseId?: string;
+  trackingNumber?: string;
+  notes?: string;
+}
+
+export interface DeliverOrderInput {
+  notes?: string;
+  deliveryNotes?: string;
+  deliveredAt?: string;
+}
+
+export interface FulfilmentActionResult {
+  orderId: string;
+  orderNumber: string;
+  status: OrderStatus;
   message: string;
 }

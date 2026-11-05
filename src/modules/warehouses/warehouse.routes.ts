@@ -4,14 +4,16 @@ import { warehouseController } from './warehouse.controller';
 import { validate } from '../../common/middlewares/validate';
 import { authenticate, authorize } from '../../common/middlewares/auth';
 import {
+  assignUserToWarehouseSchema,
   createWarehouseSchema,
   listWarehousesQuerySchema,
   warehouseIdParamSchema,
+  warehouseUserParamSchema,
 } from './warehouse.schemas';
 
 const router = Router();
 
-// Warehouse listing and single facility view (enforcing mandatory auth and role & warehouse assignment authorization)
+// Warehouse listing (enforcing mandatory auth and role & warehouse assignment authorization)
 router.get(
   '/',
   authenticate,
@@ -20,15 +22,7 @@ router.get(
   warehouseController.list
 );
 
-router.get(
-  '/:id',
-  authenticate,
-  authorize(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF),
-  validate({ params: warehouseIdParamSchema }),
-  warehouseController.getById
-);
-
-// Admin-only creation
+// Admin-only warehouse creation
 router.post(
   '/',
   authenticate,
@@ -37,5 +31,40 @@ router.post(
   warehouseController.create
 );
 
-export const warehouseRouter = router;
+// Single facility view with assigned managers and staff
+router.get(
+  '/:id',
+  authenticate,
+  authorize(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF),
+  validate({ params: warehouseIdParamSchema }),
+  warehouseController.getById
+);
 
+// Inspect assigned team members (managers and staff) for a warehouse
+router.get(
+  '/:id/users',
+  authenticate,
+  authorize(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF),
+  validate({ params: warehouseIdParamSchema }),
+  warehouseController.getUsers
+);
+
+// Assign user to warehouse (Admin only)
+router.post(
+  '/:id/assignments',
+  authenticate,
+  authorize(UserRole.ADMIN),
+  validate({ params: warehouseIdParamSchema, body: assignUserToWarehouseSchema }),
+  warehouseController.assignUser
+);
+
+// Remove user from warehouse (Admin only)
+router.delete(
+  '/:id/assignments/:userId',
+  authenticate,
+  authorize(UserRole.ADMIN),
+  validate({ params: warehouseUserParamSchema }),
+  warehouseController.removeUser
+);
+
+export const warehouseRouter = router;

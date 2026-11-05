@@ -8,6 +8,7 @@ import { paymentRouter } from './modules/payments/payment.routes';
 import { userRouter } from './modules/users/user.routes';
 import { ticketRouter } from './modules/tickets/ticket.routes';
 import { notificationRouter } from './modules/notifications/notification.routes';
+import { analyticsRouter } from './modules/analytics/analytics.routes';
 
 const rootRouter = Router();
 
@@ -20,5 +21,7 @@ rootRouter.use('/orders', orderRouter);
 rootRouter.use('/payments', paymentRouter);
 rootRouter.use('/tickets', ticketRouter);
 rootRouter.use('/notifications', notificationRouter);
+rootRouter.use('/analytics', analyticsRouter);
+rootRouter.use('/dashboard', analyticsRouter);
 
 export { rootRouter };

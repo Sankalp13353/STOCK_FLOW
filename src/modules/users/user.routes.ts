@@ -5,15 +5,19 @@ import { authenticate, authorize } from '../../common/middlewares/auth';
 import { validate } from '../../common/middlewares/validate';
 import {
   assignWarehouseSchema,
+  createUserSchema,
   listUsersQuerySchema,
+  syncUserWarehousesSchema,
   updateUserRoleSchema,
+  updateUserSchema,
+  updateUserStatusSchema,
   userIdParamSchema,
   userWarehouseParamsSchema,
 } from './user.schemas';
 
 const router = Router();
 
-// Administrative User Management APIs (Strictly ADMIN only)
+// 1. List users (Strictly ADMIN only)
 router.get(
   '/',
   authenticate,
@@ -22,14 +26,33 @@ router.get(
   userController.list
 );
 
+// 2. Create user (Manager, Staff, Customer - ADMIN only)
+router.post(
+  '/',
+  authenticate,
+  authorize(UserRole.ADMIN),
+  validate({ body: createUserSchema }),
+  userController.create
+);
+
+// 3. User by ID (ADMIN, or self)
 router.get(
   '/:id',
   authenticate,
-  authorize(UserRole.ADMIN),
   validate({ params: userIdParamSchema }),
   userController.getById
 );
 
+// 4. Update user details (ADMIN only)
+router.patch(
+  '/:id',
+  authenticate,
+  authorize(UserRole.ADMIN),
+  validate({ params: userIdParamSchema, body: updateUserSchema }),
+  userController.update
+);
+
+// 5. Update user role (ADMIN only)
 router.patch(
   '/:id/role',
   authenticate,
@@ -38,6 +61,16 @@ router.patch(
   userController.updateRole
 );
 
+// 6. Update user active status / deactivation (ADMIN only)
+router.patch(
+  '/:id/status',
+  authenticate,
+  authorize(UserRole.ADMIN),
+  validate({ params: userIdParamSchema, body: updateUserStatusSchema }),
+  userController.updateStatus
+);
+
+// 7. Assign warehouse to user (ADMIN only)
 router.post(
   '/:id/warehouses',
   authenticate,
@@ -46,6 +79,16 @@ router.post(
   userController.assignWarehouse
 );
 
+// 8. Replace / sync all warehouse assignments for user (ADMIN only)
+router.put(
+  '/:id/warehouses',
+  authenticate,
+  authorize(UserRole.ADMIN),
+  validate({ params: userIdParamSchema, body: syncUserWarehousesSchema }),
+  userController.syncWarehouses
+);
+
+// 9. Remove warehouse assignment (ADMIN only)
 router.delete(
   '/:id/warehouses/:warehouseId',
   authenticate,
@@ -54,7 +97,7 @@ router.delete(
   userController.removeWarehouse
 );
 
-// View warehouse assignments (ADMIN or the user themselves)
+// 10. View warehouse assignments for user (ADMIN or the user themselves)
 router.get(
   '/:id/warehouses',
   authenticate,
@@ -63,4 +106,3 @@ router.get(
 );
 
 export const userRouter = router;
-

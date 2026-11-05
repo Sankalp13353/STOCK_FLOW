@@ -7,6 +7,8 @@ import {
   addStockSchema,
   createThresholdSchema,
   inventoryQuerySchema,
+  movementsQuerySchema,
+  reservationsQuerySchema,
   thresholdIdParamSchema,
   thresholdQuerySchema,
   updateThresholdSchema,
@@ -39,6 +41,34 @@ router.post(
   authenticate,
   authorize(UserRole.ADMIN),
   inventoryController.expireReservations
+);
+
+// Summary metrics (Total SKUs, Total Physical, Total Reserved, Total Available, Low Stock Count)
+router.get(
+  '/metrics',
+  authenticate,
+  authorize(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF),
+  inventoryController.getMetrics
+);
+
+// Movements ledger (read-only audit trail)
+// Must be registered BEFORE /:warehouseId route to prevent routing collision
+router.get(
+  '/movements',
+  authenticate,
+  authorize(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF),
+  validate({ query: movementsQuerySchema }),
+  inventoryController.getMovements
+);
+
+// Reservations inspection (holds and committed allocations)
+// Must be registered BEFORE /:warehouseId route to prevent routing collision
+router.get(
+  '/reservations',
+  authenticate,
+  authorize(UserRole.ADMIN, UserRole.WAREHOUSE_MANAGER, UserRole.WAREHOUSE_STAFF),
+  validate({ query: reservationsQuerySchema }),
+  inventoryController.getReservations
 );
 
 // Minimum Stock Thresholds Management APIs
@@ -118,4 +148,3 @@ router.get(
 );
 
 export const inventoryRouter = router;
-

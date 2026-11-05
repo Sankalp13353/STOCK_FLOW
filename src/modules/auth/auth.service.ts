@@ -13,6 +13,7 @@ export interface UserResponse {
   email: string;
   fullName: string;
   role: UserRole;
+  isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -29,6 +30,7 @@ export class AuthService {
       email: user.email,
       fullName: user.fullName,
       role: user.role,
+      isActive: user.isActive,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };
@@ -80,6 +82,13 @@ export class AuthService {
 
     if (!user) {
       throw new UnauthorizedError('Invalid email or password');
+    }
+
+    if (!user.isActive) {
+      throw new UnauthorizedError(
+        'Your account has been deactivated. Please contact an administrator.',
+        'ACCOUNT_DEACTIVATED'
+      );
     }
 
     const isMatch = await bcrypt.compare(input.password, user.passwordHash);

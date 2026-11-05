@@ -13,7 +13,10 @@ export function createApp(): Express {
   const app = express();
 
   // 1. Global Middlewares
-  // Trust first proxy hop in production (Railway, AWS ALB, Cloudflare)
+  // Disable X-Powered-By header to prevent fingerprinting
+  app.disable('x-powered-by');
+
+  // Trust first proxy hop in production (Railway, AWS ALB, Cloudflare, Render)
   if (env.NODE_ENV === 'production') {
     app.set('trust proxy', 1);
   }
@@ -22,6 +25,18 @@ export function createApp(): Express {
     ? env.CORS_ORIGIN.split(',').map((origin) => origin.trim())
     : env.CORS_ORIGIN;
   app.use(cors({ origin: allowedOrigins, credentials: true }));
+
+  // Security Headers (Defense in depth: nosniff, anti-clickjacking frame guard, XSS protection, HSTS)
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    if (env.NODE_ENV === 'production') {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
+    next();
+  });
+
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
   app.use(requestLogger);

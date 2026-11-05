@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { UserRole } from '@prisma/client';
 
 export const createWarehouseSchema = z.object({
   code: z.string().trim().min(2, 'Warehouse code must be at least 2 characters').max(50),
@@ -20,6 +21,16 @@ export const listWarehousesQuerySchema = z.object({
     .optional(),
 });
 
+export const assignUserToWarehouseSchema = z.object({
+  userId: z.string().uuid('Invalid User UUID format'),
+  role: z.nativeEnum(UserRole).optional(),
+});
+
+export const warehouseUserParamSchema = z.object({
+  id: z.string().uuid('Invalid Warehouse UUID format'),
+  userId: z.string().uuid('Invalid User UUID format'),
+});
+
 export type CreateWarehouseInput = z.infer<typeof createWarehouseSchema>;
 export type ListWarehousesQuery = z.infer<typeof listWarehousesQuerySchema>;
-
+export type AssignUserToWarehouseInput = z.infer<typeof assignUserToWarehouseSchema>;

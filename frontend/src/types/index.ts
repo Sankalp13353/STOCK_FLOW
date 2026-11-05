@@ -38,5 +38,7 @@ export * from './warehouses';
 export * from './inventory';
 export * from './orders';
 export * from './ticket';
+export * from './users';
+export * from './analytics';
 
 

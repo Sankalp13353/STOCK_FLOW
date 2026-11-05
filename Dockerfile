@@ -51,6 +51,10 @@ USER node
 # Expose HTTP port
 EXPOSE 4000
 
+# Container Healthcheck (polls the /health endpoint every 30s)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:4000/health || exit 1
+
 # Signal handling via tini
 ENTRYPOINT ["/sbin/tini", "--"]
 

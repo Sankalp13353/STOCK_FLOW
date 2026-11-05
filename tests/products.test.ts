@@ -1,6 +1,7 @@
 import request from 'supertest';
-import { UserRole } from '@prisma/client';
+import { MovementType, OrderStatus, UserRole } from '@prisma/client';
 import { app } from '../src/app';
+import { prisma } from '../src/database/prisma';
 import { clearDatabase } from './setup';
 import { createTestUser } from './helpers';
 
@@ -189,6 +190,203 @@ describe('Product Management API', () => {
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
       expect(res.body.data.isActive).toBe(false);
+    });
+  });
+
+  describe('DELETE /api/v1/products/:id', () => {
+    let unreferencedProductId: string;
+
+    beforeEach(async () => {
+      const res = await request(app)
+        .post('/api/v1/products')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          sku: 'SKU-DELETE-ME',
+          name: 'Temporary Product',
+          priceCents: 5000,
+        });
+      unreferencedProductId = res.body.data.id;
+    });
+
+    it('should delete unreferenced product successfully when called by Admin', async () => {
+      const res = await request(app)
+        .delete(`/api/v1/products/${unreferencedProductId}`)
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.id).toBe(unreferencedProductId);
+
+      // Verify it is gone
+      const verifyRes = await request(app)
+        .get(`/api/v1/products/${unreferencedProductId}`)
+        .set('Authorization', `Bearer ${adminToken}`);
+      expect(verifyRes.status).toBe(404);
+    });
+
+    it('should prevent non-admin from deleting products with HTTP 403 Forbidden', async () => {
+      const res = await request(app)
+        .delete(`/api/v1/products/${unreferencedProductId}`)
+        .set('Authorization', `Bearer ${customerToken}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('FORBIDDEN');
+    });
+
+    it('should reject deleting non-existent product with HTTP 404 Not Found', async () => {
+      const nonExistentUuid = 'a0000000-0000-0000-0000-000000000000';
+      const res = await request(app)
+        .delete(`/api/v1/products/${nonExistentUuid}`)
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(res.status).toBe(404);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('NOT_FOUND');
+    });
+
+    it('should reject deleting product with active warehouse inventory stock with HTTP 409 Conflict', async () => {
+      const warehouse = await prisma.warehouse.create({
+        data: {
+          code: 'WH-TEST-DEL-1',
+          name: 'Test Warehouse 1',
+          address: '123 Warehouse Lane',
+          city: 'London',
+          country: 'UK',
+          isActive: true,
+        },
+      });
+
+      await prisma.inventory.create({
+        data: {
+          productId: unreferencedProductId,
+          warehouseId: warehouse.id,
+          quantityOnHand: 50,
+          quantityReserved: 0,
+        },
+      });
+
+      const res = await request(app)
+        .delete(`/api/v1/products/${unreferencedProductId}`)
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(res.status).toBe(409);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('CONFLICT');
+      expect(res.body.error.message).toContain('active inventory stock');
+    });
+
+    it('should reject deleting product with historical inventory ledger movements with HTTP 409 Conflict', async () => {
+      const warehouse = await prisma.warehouse.create({
+        data: {
+          code: 'WH-TEST-DEL-2',
+          name: 'Test Warehouse 2',
+          address: '456 Warehouse Lane',
+          city: 'London',
+          country: 'UK',
+          isActive: true,
+        },
+      });
+
+      await prisma.inventoryMovement.create({
+        data: {
+          productId: unreferencedProductId,
+          warehouseId: warehouse.id,
+          movementType: MovementType.RESTOCK,
+          quantityDelta: 10,
+          notes: 'Test Restock',
+        },
+      });
+
+      const res = await request(app)
+        .delete(`/api/v1/products/${unreferencedProductId}`)
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(res.status).toBe(409);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('CONFLICT');
+      expect(res.body.error.message).toContain('recorded inventory ledger movements');
+    });
+
+    it('should reject deleting product referenced in customer order with HTTP 409 Conflict', async () => {
+      const warehouse = await prisma.warehouse.create({
+        data: {
+          code: 'WH-TEST-DEL-ORD',
+          name: 'Order Warehouse',
+          address: '789 Warehouse Way',
+          city: 'London',
+          country: 'UK',
+          isActive: true,
+        },
+      });
+
+      const customer = await prisma.user.findFirst({ where: { role: UserRole.CUSTOMER } });
+      const order = await prisma.order.create({
+        data: {
+          orderNumber: 'ORD-TEST-DEL-1',
+          userId: customer!.id,
+          status: OrderStatus.CONFIRMED,
+          totalAmountCents: 5000,
+          shippingAddress: '123 Street',
+          idempotencyKey: 'IDEMP-TEST-DEL-1',
+        },
+      });
+
+      await prisma.orderItem.create({
+        data: {
+          orderId: order.id,
+          productId: unreferencedProductId,
+          warehouseId: warehouse.id,
+          quantity: 1,
+          unitPriceCents: 5000,
+          subtotalCents: 5000,
+        },
+      });
+
+      const res = await request(app)
+        .delete(`/api/v1/products/${unreferencedProductId}`)
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(res.status).toBe(409);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.code).toBe('CONFLICT');
+      expect(res.body.error.message).toContain('customer order(s)');
+    });
+
+    it('should safely delete a product that has zero-stock inventory records and no movements or orders', async () => {
+      const warehouse = await prisma.warehouse.create({
+        data: {
+          code: 'WH-TEST-DEL-3',
+          name: 'Test Warehouse 3',
+          address: '789 Warehouse Lane',
+          city: 'London',
+          country: 'UK',
+          isActive: true,
+        },
+      });
+
+      await prisma.inventory.create({
+        data: {
+          productId: unreferencedProductId,
+          warehouseId: warehouse.id,
+          quantityOnHand: 0,
+          quantityReserved: 0,
+        },
+      });
+
+      const res = await request(app)
+        .delete(`/api/v1/products/${unreferencedProductId}`)
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.id).toBe(unreferencedProductId);
+
+      // Verify product and inventory rows are gone
+      const invCheck = await prisma.inventory.findFirst({
+        where: { productId: unreferencedProductId },
+      });
+      expect(invCheck).toBeNull();
     });
   });
 });
