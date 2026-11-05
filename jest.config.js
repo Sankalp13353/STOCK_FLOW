@@ -11,4 +11,5 @@ module.exports = {
   clearMocks: true,
   verbose: true,
   testTimeout: 30000,
+  watchman: false,
 };

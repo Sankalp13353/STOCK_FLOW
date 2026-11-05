@@ -6,10 +6,17 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  DATABASE_URL: postgresql://test_user:test_password@localhost:5432/stockflow_test_db?schema=public
+  DIRECT_URL: postgresql://test_user:test_password@localhost:5432/stockflow_test_db?schema=public
+
 jobs:
   validate-and-build:
     name: Lint, Validate & Compile
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://test_user:test_password@localhost:5432/stockflow_test_db?schema=public
+      DIRECT_URL: postgresql://test_user:test_password@localhost:5432/stockflow_test_db?schema=public
 
     steps:
       - name: Checkout Code
@@ -25,6 +32,9 @@ jobs:
         run: npm ci
 
       - name: Validate Prisma Schema
+        env:
+          DATABASE_URL: postgresql://test_user:test_password@localhost:5432/stockflow_test_db?schema=public
+          DIRECT_URL: postgresql://test_user:test_password@localhost:5432/stockflow_test_db?schema=public
         run: npx prisma validate
 
       - name: Compile TypeScript
